@@ -46,7 +46,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY main.py ./
 
-COPY assets ./assets
+
 COPY db.sql ./
 COPY packages ./packages
 COPY config ./config
