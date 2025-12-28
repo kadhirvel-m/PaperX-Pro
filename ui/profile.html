@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Paper X — Profile</title>
+  <meta name="description" content="Your Paper X profile dashboard." />
+  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0"
+    rel="stylesheet" />
+
+  <link rel="stylesheet" href="assets/css/tailwind.css" />
+  <script>
+    (() => {
+      try {
+        const keys = ['cx-theme', 'px-theme', 'px_theme', 'theme'];
+        let stored = null;
+        for (const key of keys) {
+          try {
+            const value = localStorage.getItem(key);
+            if (value) { stored = value; break; }
+          } catch (_) { }
+        }
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const useDark = stored ? stored === 'dark' : prefersDark;
+        if (useDark) document.documentElement.classList.add('dark');
+      } catch (_) { }
+    })();
+  </script>
+  <script src="config.js"></script>
+  <script src="auth.js" defer></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        container: { center: true, padding: '1rem' },
+        extend: {
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+          colors: {
+            brand: {
+              50: '#FAF5FB',
+              100: '#F3E7F2',
+              200: '#E7D0E4',
+              300: '#D9B4D3',
+              400: '#C88DBA',
+              500: '#9E4B8A',
+              600: '#824074',
+              700: '#4C2A59',
+              800: '#2E1C3B',
+              900: '#1E1E2F'
+            },
+            brandlt: {
+              50: '#FAF5FB',
+              100: '#F3E7F2',
+              200: '#E7D0E4',
+              300: '#D9B4D3',
+              400: '#C88DBA',
+              500: '#9E4B8A',
+              700: '#4C2A59',
+              900: '#1E1E2F'
+            },
+            ink: '#1E1E2F',
+            plum: '#4C2A59',
+            orchid: '#9E4B8A'
+          },
+          boxShadow: {
+            glow: '0 8px 30px rgba(158,75,138,0.25)',
+            soft: '0 10px 30px rgba(0,0,0,0.12)',
+            card: '0 24px 60px rgba(30,30,47,0.28)'
+          },
+          borderRadius: { '3xl': '1.5rem' },
+          backgroundImage: {
+            'hero-dark':
+              'radial-gradient(900px 520px at 50% -10%, rgba(158,75,138,0.35), transparent 65%), linear-gradient(180deg, #1E1E2F 0%, #221B38 45%, #141321 100%)',
+            'hero-light':
+              'radial-gradient(900px 520px at 50% -10%, rgba(158,75,138,0.18), transparent 65%), linear-gradient(180deg, #FFFFFF 0%, #FBF8FC 45%, #F7F2F9 100%)'
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    .material-symbols-rounded {
+      vertical-align: -6px;
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+
+    .icon {
+      font-family: 'Material Symbols Rounded';
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+
+    body {
+      background-repeat: no-repeat;
+      background-size: cover;
+    }
+
+    .profile-hero::before,
+    .profile-hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .profile-hero::before {
+      background: radial-gradient(480px 260px at 85% -20%, rgba(158, 75, 138, 0.25), transparent 70%),
+        radial-gradient(420px 220px at 15% -30%, rgba(76, 42, 89, 0.18), transparent 65%);
+    }
+
+    .profile-hero::after {
+      background: radial-gradient(360px 220px at 50% 120%, rgba(158, 75, 138, 0.18), transparent 70%);
+    }
+
+    .profile-card {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.65));
+      box-shadow: 0 18px 40px rgba(30, 30, 47, 0.12);
+    }
+
+    .dark .profile-card {
+      background: linear-gradient(180deg, rgba(30, 30, 47, 0.82), rgba(30, 30, 47, 0.6));
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    .link-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2.25rem;
+      height: 2.25rem;
+      border-radius: 0.75rem;
+      background: rgba(158, 75, 138, 0.12);
+      color: #9E4B8A;
+      box-shadow: 0 6px 18px rgba(30, 30, 47, 0.12);
+      transition: transform .25s ease, box-shadow .25s ease;
+      flex-shrink: 0;
+    }
+
+    .link-icon svg {
+      width: 1.15rem;
+      height: 1.15rem;
+    }
+
+    .links-grid .group:hover .link-icon {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 26px rgba(30, 30, 47, 0.18);
+    }
+
+    .resume-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      width: 100%;
+      padding: 0.65rem 1.6rem;
+      border-radius: 9999px;
+      background: linear-gradient(90deg, #9E4B8A 0%, #B06AB3 50%, #FF7FD1 100%);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 16px 32px rgba(158, 75, 138, 0.28);
+      transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+
+    .resume-link .link-icon {
+      width: 2rem;
+      height: 2rem;
+      background: rgba(255, 255, 255, 0.25);
+      box-shadow: 0 10px 24px rgba(30, 30, 47, 0.22);
+      color: #4C2A59;
+    }
+
+    .resume-link:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 22px 38px rgba(158, 75, 138, 0.32);
+      background: linear-gradient(90deg, #A95A95 0%, #C37CBE 50%, #FF8FDC 100%);
+    }
+
+    .resume-link:focus-visible {
+      outline: 3px solid rgba(158, 75, 138, 0.35);
+      outline-offset: 3px;
+    }
+
+    .resume-link:active {
+      transform: translateY(0);
+      box-shadow: 0 14px 24px rgba(158, 75, 138, 0.24);
+    }
+
+    .tabBtn {
+      position: relative;
+      transition: all .25s ease;
+    }
+
+    .tabBtn.tab-active {
+      background: linear-gradient(90deg, #9E4B8A 0%, #B06AB3 50%, #FF7FD1 100%);
+      color: #fff !important;
+      box-shadow: 0 12px 28px rgba(158, 75, 138, 0.28);
+      border-color: transparent !important;
+    }
+
+    .dark .tabBtn.tab-active {
+      box-shadow: 0 16px 32px rgba(0, 0, 0, 0.4);
+    }
+
+    .skeleton {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .skeleton::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .45), transparent);
+      animation: shimmer 1.25s infinite;
+    }
+
+    @keyframes shimmer {
+      100% {
+        transform: translateX(100%);
+      }
+    }
+
+    .timeline {
+      position: relative;
+      padding-left: 1.5rem;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 0.65rem;
+      top: 0.35rem;
+      bottom: 0.35rem;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(158, 75, 138, 0.5), transparent 85%);
+    }
+
+    .timeline-item {
+      position: relative;
+      padding-left: 1.5rem;
+    }
+
+    .timeline-item::before {
+      content: "";
+      position: absolute;
+      left: -0.13rem;
+      top: 0.6rem;
+      width: 0.65rem;
+      height: 0.65rem;
+      border-radius: 9999px;
+      background: linear-gradient(135deg, #9E4B8A, #4C2A59);
+      box-shadow: 0 0 0 4px rgba(158, 75, 138, 0.16);
+    }
+
+    #mobileNavBackdrop {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .25s ease;
+    }
+
+    #mobileNavPanel {
+      opacity: 0;
+      transform: translateY(-12px);
+      pointer-events: none;
+      transition: opacity .25s ease, transform .25s ease;
+    }
+
+    #mobileNavBackdrop[data-open="true"],
+    #mobileNavBackdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #mobileNavPanel[data-open="true"],
+    #mobileNavPanel.open {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    /* Loader Styles */
+    #pageLoader {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(255, 255, 255, 0.6);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.4s ease, visibility 0.4s;
+    }
+
+    .dark #pageLoader {
+      background: rgba(30, 30, 47, 0.7);
+    }
+
+    .loaded #pageLoader {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+  </style>
+  <script src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.11/dist/dotlottie-wc.js" type="module"></script>
+</head>
+
+<body
+  class="min-h-screen font-sans antialiased text-neutral-900 dark:text-white bg-hero-light dark:bg-hero-dark transition-colors relative">
+
+  <!-- Loading Overlay -->
+  <div id="pageLoader">
+    <dotlottie-wc src="https://lottie.host/848055f4-11c7-4032-80e0-d51319c33bca/lF6845uqpU.lottie"
+      style="width: 300px;height: 300px" autoplay loop></dotlottie-wc>
+  </div>
+  <header
+    class="sticky top-0 z-40 bg-white/70 dark:bg-brand-900/60 backdrop-blur supports-[backdrop-filter]:saturate-150 border-b border-black/5 dark:border-white/10 relative">
+    <div class="container flex items-center justify-between py-4">
+      <a href="index.html" class="flex items-center gap-3" aria-label="Paper X Home">
+        <img src="assets/img/logo-light.svg" alt="Paper X" class="h-10 w-auto dark:hidden" />
+        <img src="assets/img/logo-dark.svg" alt="Paper X" class="h-10 w-auto hidden dark:block" />
+      </a>
+      <nav class="hidden md:flex items-center gap-6 text-sm text-neutral-700 dark:text-white/85">
+        <a class="hover:text-brandlt-900 dark:hover:text-white" href="../../index.html">Home</a>
+        <a class="hover:text-brandlt-900 dark:hover:text-white" href="about.html">About</a>
+        <a class="hover:text-brandlt-900 dark:hover:text-white" href="postings.html">Opportunities</a>
+        <a class="hover:text-brandlt-900 dark:hover:text-white" href="my_applications.html">My applications</a>
+        <a class="hover:text-brandlt-900 dark:hover:text-white" href="contact.html">Support</a>
+      </nav>
+      <div class="hidden md:flex items-center gap-2">
+        <button data-theme-toggle aria-label="Toggle theme"
+          class="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg-white/5 transition">
+          <span class="material-symbols-rounded">dark_mode</span>
+          <span class="hidden lg:block">Theme</span>
+        </button>
+        <a href="login.html"
+          class="px-3 py-2 text-sm text-neutral-700 dark:text-white/80 hover:text-brandlt-900 dark:hover:text-white rounded-full">Log
+          in</a>
+        <a href="signup.html"
+          class="inline-flex items-center justify-center rounded-full bg-brand-500 text-white text-sm font-semibold px-4 py-2.5 hover:shadow-glow transition">Sign
+          up</a>
+        <a id="navProfile" href="profile.html" title="Profile"
+          class="hidden items-center justify-center w-10 h-10 rounded-full overflow-hidden border border-black/10 dark:border-white/10 bg-white/90 dark:bg-brand-900/60">
+          <img id="navProfileImg" alt="Profile" class="w-full h-full object-cover hidden" />
+          <span id="navProfileInitial" class="text-xs font-semibold">ME</span>
+        </a>
+        <button id="signOutBtn" type="button" title="Sign out" aria-label="Sign out"
+          class="hidden items-center gap-2 rounded-full border border-black/10 dark:border-white/15 px-3 py-1.5 text-sm text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/5 transition">
+          <span class="material-symbols-rounded text-base">logout</span>
+          <span>Sign out</span>
+        </button>
+      </div>
+      <div class="md:hidden flex items-center gap-2">
+        <button type="button" data-theme-toggle aria-label="Toggle theme"
+          class="inline-flex items-center justify-center size-10 rounded-full ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg-white/5 transition">
+          <span class="material-symbols-rounded">dark_mode</span>
+        </button>
+        <button id="mobileNavToggle" type="button" aria-expanded="false" aria-controls="mobileNavPanel"
+          class="inline-flex items-center justify-center size-10 rounded-full ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg-white/5 transition">
+          <span class="sr-only">Toggle navigation</span>
+          <span class="material-symbols-rounded" data-icon>menu</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div id="mobileNavBackdrop" aria-hidden="true"
+    class="md:hidden fixed inset-0 z-40 bg-black/60 dark:bg-black/80 backdrop-blur-sm"></div>
+  <nav id="mobileNavPanel" aria-hidden="true"
+    class="md:hidden fixed inset-x-4 top-24 z-50 flex flex-col gap-5 max-h-[calc(100vh-6.5rem)] overflow-y-auto rounded-3xl border border-black/10 dark:border-white/10 bg-white/95 dark:bg-brand-900/95 shadow-card backdrop-blur supports-[backdrop-filter]:backdrop-blur-xl p-6">
+    <div class="flex flex-col gap-2 text-sm text-neutral-700 dark:text-white/80">
+      <a href="../../index.html" data-close-mobile-nav
+        class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/25 transition">Home</a>
+      <a href="about.html" data-close-mobile-nav
+        class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/25 transition">About</a>
+      <a href="postings.html" data-close-mobile-nav
+        class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/25 transition">Opportunities</a>
+      <a href="my_applications.html" data-close-mobile-nav
+        class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/25 transition">My applications</a>
+      <a href="contact.html" data-close-mobile-nav
+        class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/25 transition">Support</a>
+    </div>
+    <div class="flex flex-col gap-3 border-t border-black/5 dark:border-white/10 pt-4">
+      <a href="login.html" data-close-mobile-nav
+        class="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium ring-1 ring-black/10 dark:ring-white/15 text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/10 transition">Log
+        in</a>
+      <a href="signup.html" data-close-mobile-nav
+        class="inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold text-white bg-gradient-to-r from-[#9E4B8A] via-[#B06AB3] to-[#FF7FD1] shadow-[0_4px_18px_-6px_rgba(158,75,138,0.6)] hover:shadow-[0_6px_24px_-8px_rgba(158,75,138,0.7)] transition">Sign
+        up</a>
+      <a id="navProfileMobile" href="profile.html" data-close-mobile-nav
+        class="hidden inline-flex items-center gap-2 rounded-xl border border-black/10 dark:border-white/15 px-4 py-2 text-sm text-neutral-700 dark:text-white/80 bg-white/70 dark:bg-brand-900/60">
+        <span class="material-symbols-rounded text-base">account_circle</span>
+        <span data-profile-name>My profile</span>
+      </a>
+      <button id="signOutBtnMobile" type="button"
+        class="hidden inline-flex items-center gap-2 rounded-full border border-black/10 dark:border-white/15 px-4 py-2 text-sm text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/10 transition">
+        <span class="material-symbols-rounded text-base">logout</span>
+        <span>Sign out</span>
+      </button>
+    </div>
+  </nav>
+
+  <section class="relative overflow-hidden profile-hero">
+    <div class="container relative">
+      <div
+        class="rounded-b-3xl h-28 md:h-24 bg-gradient-to-r from-brand-400/80 via-brand-500/70 to-brand-700/80 dark:from-brand-700 dark:via-brand-800 dark:to-brand-900 shadow-[0_18px_60px_rgba(76,42,89,0.35)]">
+      </div>
+    </div>
+  </section>
+
+  <main class="container -mt-16 md:-mt-20 pb-20 space-y-8">
+    <div
+      class="rounded-3xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/60 backdrop-blur shadow-card p-6 md:p-8">
+      <div class="flex flex-col md:flex-row md:items-end gap-6 md:gap-8">
+        <div
+          class="relative w-28 h-28 md:w-32 md:h-32 rounded-full border-[5px] border-white/90 dark:border-brand-700/60 overflow-hidden bg-brandlt-100 dark:bg-brand-900/50">
+          <img id="profileImage" src="" alt="Profile picture" class="w-full h-full object-cover hidden" />
+          <div id="profileImageFallback"
+            class="absolute inset-0 flex items-center justify-center text-3xl font-semibold text-brand-700 dark:text-brandlt-100">
+            <span id="profileInitials">?</span>
+          </div>
+          <div id="verifyBadge"
+            class="absolute -bottom-2 -right-2 flex items-center gap-1 rounded-full text-white text-xs px-2 py-1 shadow-brand-lg hidden">
+            <span class="icon text-sm">verified</span><span id="verifyScore">--</span>
+          </div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <h1 id="profileName"
+            class="pt-10 md:pt-0 font-extrabold text-3xl md:text-4xl tracking-tight text-neutral-900 dark:text-white">--
+          </h1>
+          <p id="profileHeadline" class="mt-2 text-sm md:text-base text-neutral-600 dark:text-white/70 line-clamp-2">Add
+            a
+            headline to introduce yourself.</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2 text-sm text-neutral-500 dark:text-white/60">
+            <span class="icon">location_on</span><span id="profileLocation">—</span>
+            <span class="icon ml-3">calendar_month</span><span id="info-batch-inline">—</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <a href="academicas.html"
+            class="inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brandlt-100/80 dark:bg-brand-700/30 px-4 py-2 text-sm font-medium text-brand-700 dark:text-brandlt-100 transition hover:border-brand-500/60 hover:shadow-glow">
+            <span class="icon text-base">school</span> Academics
+          </a>
+          <a href="profile_edit.html"
+            class="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#9E4B8A] via-[#B06AB3] to-[#FF7FD1] text-white px-5 py-2.5 text-sm font-semibold shadow-[0_14px_30px_rgba(158,75,138,0.28)] hover:shadow-[0_18px_36px_rgba(158,75,138,0.35)] transition">
+            <span class="icon text-base">edit</span> Edit Profile
+          </a>
+        </div>
+      </div>
+      <div class="mt-6">
+        <div class="flex items-center justify-between text-xs text-neutral-500 dark:text-white/65 mb-1"><span>Profile
+            completeness</span><span id="completePct">—</span></div>
+        <div class="h-2 rounded-full bg-brandlt-200/60 dark:bg-brand-900/40 overflow-hidden">
+          <div id="completeBar" class="h-2 bg-brand-500 w-0 transition-all duration-500"></div>
+        </div>
+      </div>
+    </div>
+
+    <section class="mt-8">
+      <div
+        class="rounded-3xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-3">
+        <div class="flex flex-wrap gap-2">
+          <button data-tab="overview"
+            class="tabBtn tab-active rounded-full px-4 py-2 text-sm font-semibold transition ring-1 ring-transparent text-white">
+            Overview
+          </button>
+          <button data-tab="about"
+            class="tabBtn rounded-full px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-white/70 bg-white/70 dark:bg-brand-900/40 ring-1 ring-black/5 dark:ring-white/10 transition">
+            About
+          </button>
+          <button data-tab="activity"
+            class="tabBtn rounded-full px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-white/70 bg-white/70 dark:bg-brand-900/40 ring-1 ring-black/5 dark:ring-white/10 transition">
+            Activity
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-4 grid gap-4">
+        <div data-panel="overview" class="tabPanel grid gap-4">
+          <div class="grid lg:grid-cols-[1.2fr,.8fr] gap-4">
+            <section
+              class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+              <h3 class="font-semibold mb-4 flex items-center gap-2"><span class="icon">badge</span> Basic Info</h3>
+              <dl class="grid grid-cols-[auto,1fr] gap-x-6 gap-y-2 text-sm">
+                <dt class="font-medium text-black/80 dark:text-white/80">Name</dt>
+                <dd id="info-name" class="opacity-80 skeleton">—</dd>
+                <dt class="font-medium text-black/80 dark:text-white/80">College</dt>
+                <dd id="info-college" class="opacity-80 skeleton">—</dd>
+                <dt class="font-medium text-black/80 dark:text-white/80">Batch</dt>
+                <dd id="info-batch" class="opacity-80 skeleton">—</dd>
+                <dt class="font-medium text-black/80 dark:text-white/80">Date of Birth</dt>
+                <dd id="info-dob" class="opacity-80 skeleton">—</dd>
+                <dt class="font-medium text-black/80 dark:text-white/80">Phone</dt>
+                <dd class="opacity-80 flex items-center gap-2"><span id="info-phone" class="skeleton">—</span><button
+                    id="copyPhone"
+                    class="rounded-full px-2.5 py-1.5 text-xs border border-brand-500/30 text-brand-700 dark:text-brandlt-100 bg-brandlt-100/70 dark:bg-brand-700/30 hover:border-brand-500/60 transition">Copy</button>
+                </dd>
+                <dt class="font-medium text-black/80 dark:text-white/80">Email</dt>
+                <dd class="opacity-80 flex items-center gap-2"><span id="info-email" class="skeleton">—</span><button
+                    id="copyEmail"
+                    class="rounded-full px-2.5 py-1.5 text-xs border border-brand-500/30 text-brand-700 dark:text-brandlt-100 bg-brandlt-100/70 dark:bg-brand-700/30 hover:border-brand-500/60 transition">Copy</button>
+                </dd>
+              </dl>
+            </section>
+            <section
+              class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+              <h3 class="font-semibold mb-4 flex items-center gap-2"><span class="icon">link</span> Links</h3>
+              <ul id="links-list" class="links-grid grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm hidden">
+                <li class="hidden">
+                  <a id="link-linkedin" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="linkedin"></span>
+                    <span>LinkedIn</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-github" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="github"></span>
+                    <span>GitHub</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-leetcode" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="leetcode"></span>
+                    <span>LeetCode</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-portfolio" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="portfolio"></span>
+                    <span>Portfolio</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-website" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="website"></span>
+                    <span>Website</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-twitter" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="twitter"></span>
+                    <span>Twitter</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-instagram" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="instagram"></span>
+                    <span>Instagram</span>
+                  </a>
+                </li>
+                <li class="hidden">
+                  <a id="link-medium" target="_blank" rel="noopener noreferrer"
+                    class="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 border border-black/5 dark:border-white/10 bg-white/85 dark:bg-brand-900/50 hover:border-brand-500/40 hover:shadow-glow transition">
+                    <span class="link-icon" aria-hidden="true" data-icon="medium"></span>
+                    <span>Medium</span>
+                  </a>
+                </li>
+                <li class="hidden sm:col-span-2">
+                  <a id="link-resume" target="_blank" rel="noopener noreferrer" class="group resume-link">
+                    <span class="link-icon" aria-hidden="true" data-icon="resume"></span>
+                    <span>Download Resume</span>
+                  </a>
+                </li>
+              </ul>
+              <p id="links-empty" class="text-sm text-black/50 dark:text-white/50 mt-2 hidden">Add your online profiles
+                to showcase your work.</p>
+            </section>
+          </div>
+
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold flex items-center gap-2"><span class="icon">work</span> Experience</h3>
+              <a href="profile_edit.html#experience" class="text-xs text-brand-600 dark:text-brand-300">Manage</a>
+            </div>
+            <div id="experience-list" class="timeline grid gap-6 mt-4"></div>
+            <p id="experience-empty" class="text-sm text-black/50 dark:text-white/50 mt-2">Add your professional
+              experience to showcase your journey.</p>
+          </section>
+
+          <div class="grid xl:grid-cols-2 gap-4">
+            <section
+              class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold flex items-center gap-2"><span class="icon">school</span> Education</h3>
+                <a href="profile_edit.html#education" class="text-xs text-brand-600 dark:text-brand-300">Manage</a>
+              </div>
+              <div id="education-list" class="grid gap-4 mt-4"></div>
+              <p id="education-empty" class="text-sm text-black/50 dark:text-white/50 mt-2">Add your academic history,
+                degrees and highlights.</p>
+            </section>
+            <section
+              class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+              <div class="flex items-center justify-between">
+                <h3 class="font-semibold flex items-center gap-2"><span class="icon">workspace_premium</span>
+                  Certifications</h3>
+                <a href="profile_edit.html#certifications" class="text-xs text-brand-600 dark:text-brand-300">Manage</a>
+              </div>
+              <div id="certifications-list" class="grid gap-3 mt-4"></div>
+              <p id="certifications-empty" class="text-sm text-black/50 dark:text-white/50 mt-2">Showcase certifications
+                and credentials that matter.</p>
+            </section>
+          </div>
+
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold flex items-center gap-2"><span class="icon">rocket_launch</span> Portfolio
+                Projects</h3>
+              <a href="profile_edit.html#projects" class="text-xs text-brand-600 dark:text-brand-300">Manage</a>
+            </div>
+            <div id="portfolio-grid" class="grid md:grid-cols-2 xl:grid-cols-3 gap-4 mt-4"></div>
+            <p id="portfolio-empty" class="text-sm text-black/50 dark:text-white/50 mt-2">Highlight the projects you are
+              proud of with outcomes and links.</p>
+          </section>
+
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold flex items-center gap-2"><span class="icon">menu_book</span> Publications</h3>
+              <a href="profile_edit.html#publications" class="text-xs text-brand-600 dark:text-brand-300">Manage</a>
+            </div>
+            <div id="publications-list" class="grid gap-3 mt-4"></div>
+            <p id="publications-empty" class="text-sm text-black/50 dark:text-white/50 mt-2">List your papers, articles
+              or talks to build credibility.</p>
+          </section>
+        </div>
+
+        <div data-panel="about" class="tabPanel hidden grid md:grid-cols-2 gap-4">
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">subject</span> Summary</h3>
+            <p id="info-bio" class="text-sm opacity-80">Add a short summary about yourself.</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">school</span> Specializations</h3>
+            <p id="info-specializations" class="text-sm opacity-80">--</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">construction</span> Technologies
+            </h3>
+            <p id="info-technologies" class="text-sm opacity-80">--</p>
+            <div id="tech-chips" class="mt-3 flex flex-wrap gap-2"></div>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">workspace_premium</span> Skills
+            </h3>
+            <p id="info-skills" class="text-sm opacity-80">--</p>
+            <div id="skills-chips" class="mt-3 flex flex-wrap gap-2"></div>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">military_tech</span> Achievements
+            </h3>
+            <p id="info-achievements" class="text-sm opacity-80">--</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">workspace_premium</span>
+              Certifications</h3>
+            <p id="info-certifications" class="text-sm opacity-80">--</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">translate</span> Languages</h3>
+            <p id="info-languages" class="text-sm opacity-80">--</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">interests</span> Interests</h3>
+            <p id="info-interests" class="text-sm opacity-80">--</p>
+          </section>
+        </div>
+
+        <div data-panel="activity" class="tabPanel hidden grid md:grid-cols-2 gap-4">
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">science</span> Project Highlights
+            </h3>
+            <p id="info-projects" class="text-sm opacity-80">Share context about the work you are exploring, hackathons
+              or collaborations.</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">workspace_premium</span>
+              Achievements</h3>
+            <p id="info-achievements-activity" class="text-sm opacity-80">Capture awards, recognitions or milestones.
+            </p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">badge</span> Career Summary</h3>
+            <p id="info-experience" class="text-sm opacity-80">Summarise your professional focus and strengths.</p>
+          </section>
+          <section
+            class="rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-5">
+            <h3 class="font-semibold mb-2 flex items-center gap-2"><span class="icon">menu_book</span> Publication
+              Highlights</h3>
+            <p id="info-publications" class="text-sm opacity-80">Add commentary on published work, citations or speaking
+              engagements.</p>
+          </section>
+        </div>
+      </div>
+      <p id="status" class="mt-6 text-sm text-black/60 dark:text-white/60"></p>
+    </section>
+  </main>
+
+  <footer class="mt-12 border-t border-black/5 dark:border-white/10">
+    <div
+      class="container py-10 text-xs md:text-sm text-neutral-600 dark:text-white/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <p>© <span id="y"></span> Paper X. Crafted for ambitious learners.</p>
+      <div class="flex items-center gap-4">
+        <a href="#" class="hover:text-brandlt-900 dark:hover:text-white">Privacy</a>
+        <a href="#" class="hover:text-brandlt-900 dark:hover:text-white">Terms</a>
+        <a href="#" class="hover:text-brandlt-900 dark:hover:text-white">Support</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById('y').textContent = new Date().getFullYear();
+    const tabBtns = document.querySelectorAll('.tabBtn');
+    const tabPanels = document.querySelectorAll('.tabPanel');
+    const inactiveTabClasses = ['bg-white/70', 'dark:bg-brand-900/40', 'ring-1', 'ring-black/5', 'dark:ring-white/10', 'text-neutral-600', 'dark:text-white/70'];
+    const activeRemoveClasses = ['bg-white/70', 'dark:bg-brand-900/40', 'ring-1', 'ring-black/5', 'dark:ring-white/10', 'text-neutral-600', 'dark:text-white/70'];
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-tab');
+        tabBtns.forEach(b => {
+          b.classList.remove('tab-active', 'text-white');
+          inactiveTabClasses.forEach(cls => {
+            if (!b.classList.contains(cls)) b.classList.add(cls);
+          });
+        });
+        activeRemoveClasses.forEach(cls => btn.classList.remove(cls));
+        btn.classList.add('tab-active', 'text-white');
+        tabPanels.forEach(panel => {
+          panel.classList.toggle('hidden', panel.getAttribute('data-panel') !== target);
+        });
+      });
+    });
+
+    const root = document.documentElement;
+    const themeButtons = () => Array.from(document.querySelectorAll('[data-theme-toggle]'));
+    const setThemeToggleIcons = (mode) => {
+      const iconName = mode === 'dark' ? 'light_mode' : 'dark_mode';
+      themeButtons().forEach(btn => {
+        const icon = btn.querySelector('.material-symbols-rounded');
+        if (icon) icon.textContent = iconName;
+      });
+    };
+    const resolveTheme = () => {
+      if (window.Theme && typeof window.Theme.get === 'function') {
+        return window.Theme.get();
+      }
+      return root.classList.contains('dark') ? 'dark' : 'light';
+    };
+    const toggleThemeFallback = () => {
+      const next = root.classList.contains('dark') ? 'light' : 'dark';
+      if (next === 'dark') root.classList.add('dark'); else root.classList.remove('dark');
+      ['px_theme', 'px-theme', 'cx-theme', 'theme'].forEach(key => {
+        try { localStorage.setItem(key, next); } catch (_) { }
+      });
+      return next;
+    };
+    const syncThemeToggles = () => setThemeToggleIcons(resolveTheme());
+    syncThemeToggles();
+    document.addEventListener('click', (event) => {
+      const trigger = event.target.closest('[data-theme-toggle]');
+      if (!trigger) return;
+      event.preventDefault();
+      const next = (window.Theme && typeof window.Theme.toggle === 'function') ? window.Theme.toggle() : toggleThemeFallback();
+      setThemeToggleIcons(next);
+    });
+    window.addEventListener('storage', (event) => {
+      if (!event.key) return;
+      if (['cx-theme', 'theme', 'px-theme', 'px_theme'].includes(event.key)) {
+        syncThemeToggles();
+      }
+    });
+    try {
+      if (window.matchMedia) {
+        const mq = window.matchMedia('(prefers-color-scheme: dark)');
+        if (mq && mq.addEventListener) {
+          mq.addEventListener('change', () => syncThemeToggles());
+        } else if (mq && mq.addListener) {
+          mq.addListener(() => syncThemeToggles());
+        }
+      }
+    } catch (_) { }
+
+    (function () {
+      const toggle = document.getElementById('mobileNavToggle');
+      const panel = document.getElementById('mobileNavPanel');
+      const backdrop = document.getElementById('mobileNavBackdrop');
+      if (!toggle || !panel || !backdrop) return;
+
+      const icon = toggle.querySelector('[data-icon]');
+      const focusableSelector = 'a[href], button:not([disabled])';
+
+      const openMenu = () => {
+        panel.setAttribute('data-open', 'true');
+        panel.classList.add('open');
+        panel.setAttribute('aria-hidden', 'false');
+        backdrop.setAttribute('data-open', 'true');
+        backdrop.classList.add('open');
+        backdrop.setAttribute('aria-hidden', 'false');
+        toggle.setAttribute('aria-expanded', 'true');
+        if (icon) icon.textContent = 'close';
+        document.body.classList.add('overflow-hidden');
+        const first = panel.querySelector(focusableSelector);
+        if (first) first.focus();
+      };
+
+      const closeMenu = () => {
+        panel.removeAttribute('data-open');
+        panel.classList.remove('open');
+        panel.setAttribute('aria-hidden', 'true');
+        backdrop.removeAttribute('data-open');
+        backdrop.classList.remove('open');
+        backdrop.setAttribute('aria-hidden', 'true');
+        toggle.setAttribute('aria-expanded', 'false');
+        if (icon) icon.textContent = 'menu';
+        document.body.classList.remove('overflow-hidden');
+        toggle.focus();
+      };
+
+      const toggleMenu = () => {
+        const isOpen = toggle.getAttribute('aria-expanded') === 'true';
+        (isOpen ? closeMenu : openMenu)();
+      };
+
+      toggle.addEventListener('click', toggleMenu);
+      backdrop.addEventListener('click', closeMenu);
+      panel.addEventListener('click', (evt) => {
+        if (evt.target.closest('[data-close-mobile-nav]')) {
+          closeMenu();
+        }
+      });
+      document.addEventListener('keydown', (evt) => {
+        if (evt.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') {
+          closeMenu();
+        }
+      });
+
+      window.__PX_CLOSE_MOBILE_NAV = closeMenu;
+    })();
+
+    const API = (window.API_BASE || 'https://paperxapp.onrender.com').replace(/\/$/, '');
+    const token = localStorage.getItem('px_token');
+    const refreshToken = localStorage.getItem('px_refresh_token');
+    const statusEl = document.getElementById('status');
+    const el = (id) => document.getElementById(id);
+    // Only redirect if no access token AND no refresh token (can't recover session)
+    if (!token && !refreshToken) { window.location.href = 'login.html'; }
+
+    const defaultText = (v, fb = '--') => v ? v : fb;
+    const setText = (id, v, fb = '--') => { const n = el(id); if (n) n.textContent = defaultText(v, fb); };
+    const normaliseLink = (value) => {
+      if (!value) return '';
+      const trimmed = String(value).trim();
+      if (!trimmed) return '';
+      if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return trimmed;
+      return `https://${trimmed}`;
+    };
+    const setLink = (id, v) => {
+      const a = el(id);
+      if (!a) return false;
+      const parent = a.closest('li');
+      const url = normaliseLink(v);
+      if (url) {
+        a.href = url;
+        a.classList.remove('pointer-events-none', 'opacity-50');
+        a.removeAttribute('aria-disabled');
+        if (parent) parent.classList.remove('hidden');
+        return true;
+      }
+      a.href = '#';
+      a.classList.add('pointer-events-none', 'opacity-50');
+      a.setAttribute('aria-disabled', 'true');
+      if (parent) parent.classList.add('hidden');
+      return false;
+    };
+    const linkIconConfig = {
+      linkedin: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>`, fg: '#ffffff', bg: '#0A66C2' },
+      github: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>`, fg: '#ffffff', bg: '#161B22' },
+      leetcode: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.483 0a1.374 1.374 0 0 0-.961.438L7.116 6.226l-3.854 4.126a5.266 5.266 0 0 0-1.209 2.104 5.35 5.35 0 0 0-.125.513 5.527 5.527 0 0 0 .062 2.362 5.83 5.83 0 0 0 .349 1.017 5.938 5.938 0 0 0 1.271 1.818l4.277 4.193.039.038c2.248 2.165 5.852 2.133 8.063-.074l2.396-2.392c.54-.54.54-1.414.003-1.955a1.378 1.378 0 0 0-1.951-.003l-2.396 2.392a3.021 3.021 0 0 1-4.205.038l-.02-.019-4.276-4.193c-.652-.64-.972-1.469-.948-2.263a2.68 2.68 0 0 1 .066-.523 2.545 2.545 0 0 1 .619-1.164L9.13 8.114c1.058-1.134 3.204-1.27 4.43-.278l3.501 2.831c.593.48 1.461.387 1.94-.207a1.384 1.384 0 0 0-.207-1.943l-3.5-2.831c-.8-.647-1.766-1.045-2.774-1.202l2.015-2.158A1.384 1.384 0 0 0 13.483 0zm-2.866 12.815a1.38 1.38 0 0 0-1.38 1.382 1.38 1.38 0 0 0 1.38 1.382H20.79a1.38 1.38 0 0 0 1.38-1.382 1.38 1.38 0 0 0-1.38-1.382z"/></svg>`, fg: '#FFA116', bg: '#101010' },
+      portfolio: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M7.5 5.25C7.5 3.59315 8.84315 2.25 10.5 2.25H13.5C15.1569 2.25 16.5 3.59315 16.5 5.25V5.45498C17.4325 5.54034 18.3574 5.65196 19.274 5.78912C20.7281 6.00668 21.75 7.27163 21.75 8.70569V11.7389C21.75 12.95 21.0164 14.0913 19.8137 14.4911C17.3566 15.308 14.7292 15.75 12 15.75C9.27087 15.75 6.64342 15.308 4.18627 14.4911C2.98364 14.0912 2.25 12.95 2.25 11.7389V8.70569C2.25 7.27163 3.27191 6.00668 4.72596 5.78912C5.6426 5.65196 6.56753 5.54034 7.5 5.45498V5.25ZM15 5.25V5.34082C14.0077 5.28056 13.0074 5.25 12 5.25C10.9927 5.25 9.99235 5.28056 9 5.34082V5.25C9 4.42157 9.67157 3.75 10.5 3.75H13.5C14.3284 3.75 15 4.42157 15 5.25ZM12 13.5C12.4142 13.5 12.75 13.1642 12.75 12.75C12.75 12.3358 12.4142 12 12 12C11.5858 12 11.25 12.3358 11.25 12.75C11.25 13.1642 11.5858 13.5 12 13.5Z"/><path fill="currentColor" d="M3 18.4V15.6039C3.22304 15.7263 3.46097 15.8307 3.71303 15.9145C6.32087 16.7815 9.10801 17.25 12 17.25C14.892 17.25 17.6791 16.7815 20.287 15.9145C20.539 15.8307 20.777 15.7263 21 15.604V18.4C21 19.8519 19.9528 21.1275 18.4769 21.3234C16.3575 21.6048 14.1955 21.75 12 21.75C9.80447 21.75 7.64246 21.6048 5.52314 21.3234C4.04724 21.1275 3 19.8519 3 18.4Z"/></svg>`, fg: '#4338CA', bg: '#EEF2FF' },
+      website: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.7214 12.7517C21.7404 12.5036 21.75 12.2529 21.75 11.9999C21.75 10.4758 21.4003 9.03328 20.7767 7.74835C19.5396 8.92269 18.0671 9.85146 16.4374 10.4565C16.4789 10.9655 16.5 11.4803 16.5 11.9999C16.5 13.1011 16.4051 14.1802 16.2229 15.2293C18.2163 14.7277 20.0717 13.8792 21.7214 12.7517Z"/><path fill="currentColor" d="M14.6343 15.5501C14.874 14.4043 15 13.2168 15 11.9999C15 11.6315 14.9885 11.2659 14.9657 10.9032C14.0141 11.1299 13.021 11.2499 12 11.2499C10.979 11.2499 9.98594 11.1299 9.0343 10.9032C9.01155 11.2659 9 11.6315 9 11.9999C9 13.2168 9.12601 14.4043 9.3657 15.5501C10.2246 15.6817 11.1043 15.7499 12 15.7499C12.8957 15.7499 13.7754 15.6817 14.6343 15.5501Z"/><path fill="currentColor" d="M9.77224 17.119C10.5028 17.2054 11.2462 17.2499 12 17.2499C12.7538 17.2499 13.4972 17.2054 14.2278 17.119C13.714 18.7746 12.9575 20.3235 12 21.724C11.0425 20.3235 10.286 18.7746 9.77224 17.119Z"/><path fill="currentColor" d="M7.77705 15.2293C7.59493 14.1802 7.5 13.1011 7.5 11.9999C7.5 11.4803 7.52114 10.9655 7.56261 10.4565C5.93286 9.85146 4.46039 8.92269 3.22333 7.74835C2.59973 9.03328 2.25 10.4758 2.25 11.9999C2.25 12.2529 2.25964 12.5036 2.27856 12.7517C3.92826 13.8792 5.78374 14.7277 7.77705 15.2293Z"/><path fill="currentColor" d="M21.3561 14.7525C20.3404 18.2104 17.4597 20.8705 13.8776 21.5693C14.744 20.1123 15.4185 18.5278 15.8664 16.8508C17.8263 16.44 19.6736 15.7231 21.3561 14.7525Z"/><path fill="currentColor" d="M2.64395 14.7525C4.32642 15.7231 6.17372 16.44 8.13356 16.8508C8.58146 18.5278 9.25602 20.1123 10.1224 21.5693C6.54027 20.8705 3.65964 18.2104 2.64395 14.7525Z"/><path fill="currentColor" d="M13.8776 2.43055C16.3991 2.92245 18.5731 4.3862 19.9937 6.41599C18.9351 7.48484 17.6637 8.34251 16.2483 8.92017C15.862 6.58282 15.0435 4.39132 13.8776 2.43055Z"/><path fill="currentColor" d="M12 2.27588C13.4287 4.36548 14.4097 6.78537 14.805 9.39744C13.9083 9.62756 12.9684 9.74993 12 9.74993C11.0316 9.74993 10.0917 9.62756 9.19503 9.39744C9.5903 6.78537 10.5713 4.36548 12 2.27588Z"/><path fill="currentColor" d="M10.1224 2.43055C8.95648 4.39132 8.13795 6.58282 7.75171 8.92017C6.33629 8.34251 5.06489 7.48484 4.00635 6.41599C5.42689 4.3862 7.60085 2.92245 10.1224 2.43055Z"/></svg>`, fg: '#047857', bg: '#ECFDF5' },
+      twitter: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.543 7.104c.015.211.015.423.015.636 0 6.507-4.954 14.01-14.01 14.01v-.003A13.94 13.94 0 0 1 0 19.539a9.88 9.88 0 0 0 7.287-2.041 4.93 4.93 0 0 1-4.6-3.42 4.916 4.916 0 0 0 2.223-.084A4.926 4.926 0 0 1 .96 9.167v-.062a4.887 4.887 0 0 0 2.235.616A4.928 4.928 0 0 1 1.67 3.148 13.98 13.98 0 0 0 11.82 8.292a4.929 4.929 0 0 1 8.39-4.49 9.868 9.868 0 0 0 3.128-1.196 4.941 4.941 0 0 1-2.165 2.724A9.828 9.828 0 0 0 24 4.555a10.019 10.019 0 0 1-2.457 2.549z"/></svg>`, fg: '#ffffff', bg: '#1DA1F2' },
+      instagram: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 0C8.74 0 8.333.015 7.053.072 5.775.132 4.905.333 4.14.63c-.789.306-1.459.717-2.126 1.384S.935 3.35.63 4.14C.333 4.905.131 5.775.072 7.053.012 8.333 0 8.74 0 12s.015 3.667.072 4.947c.06 1.277.261 2.148.558 2.913.306.788.717 1.459 1.384 2.126.667.666 1.336 1.079 2.126 1.384.766.296 1.636.499 2.913.558C8.333 23.988 8.74 24 12 24s3.667-.015 4.947-.072c1.277-.06 2.148-.262 2.913-.558.788-.306 1.459-.718 2.126-1.384.666-.667 1.079-1.335 1.384-2.126.296-.765.499-1.636.558-2.913.06-1.28.072-1.687.072-4.947s-.015-3.667-.072-4.947c-.06-1.277-.262-2.149-.558-2.913-.306-.789-.718-1.459-1.384-2.126C21.319 1.347 20.651.935 19.86.63c-.765-.297-1.636-.499-2.913-.558C15.667.012 15.26 0 12 0zm0 2.16c3.203 0 3.585.016 4.85.071 1.17.055 1.805.249 2.227.415.562.217.96.477 1.382.896.419.42.679.819.896 1.381.164.422.36 1.057.413 2.227.057 1.266.07 1.646.07 4.85s-.015 3.585-.074 4.85c-.061 1.17-.256 1.805-.421 2.227-.224.562-.479.96-.899 1.382-.419.419-.824.679-1.38.896-.42.164-1.065.36-2.235.413-1.274.057-1.649.07-4.859.07-3.211 0-3.586-.015-4.859-.074-1.171-.061-1.816-.256-2.236-.421-.569-.224-.96-.479-1.379-.899-.421-.419-.69-.824-.9-1.38-.165-.42-.359-1.065-.42-2.235-.045-1.26-.061-1.649-.061-4.844 0-3.196.016-3.586.061-4.861.061-1.17.255-1.814.42-2.234.21-.57.479-.96.9-1.381.419-.419.81-.689 1.379-.898.42-.166 1.051-.361 2.221-.421 1.275-.045 1.65-.06 4.859-.06l.045.03zm0 3.678c-3.405 0-6.162 2.76-6.162 6.162 0 3.405 2.76 6.162 6.162 6.162 3.405 0 6.162-2.76 6.162-6.162 0-3.405-2.76-6.162-6.162-6.162zM12 16c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4zm7.846-10.405c0 .795-.646 1.44-1.44 1.44-.795 0-1.44-.646-1.44-1.44 0-.794.646-1.439 1.44-1.439.793-.001 1.44.645 1.44 1.439z"/></svg>`, fg: '#ffffff', bg: 'linear-gradient(135deg, #F58529 0%, #DD2A7B 50%, #8134AF 100%)' },
+      medium: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.54 12a6.8 6.8 0 01-6.77 6.82A6.8 6.8 0 010 12a6.8 6.8 0 016.77-6.82A6.8 6.8 0 0113.54 12zM20.96 12c0 3.54-1.51 6.42-3.38 6.42-1.87 0-3.39-2.88-3.39-6.42s1.52-6.42 3.39-6.42 3.38 2.88 3.38 6.42M24 12c0 3.17-.53 5.75-1.19 5.75-.66 0-1.19-2.58-1.19-5.75s.53-5.75 1.19-5.75C23.47 6.25 24 8.83 24 12z"/></svg>`, fg: '#ffffff', bg: '#000000' },
+      resume: { svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2.25C12.4142 2.25 12.75 2.58579 12.75 3V14.6893L15.9697 11.4697C16.2626 11.1768 16.7374 11.1768 17.0303 11.4697C17.3232 11.7626 17.3232 12.2374 17.0303 12.5303L12.5303 17.0303C12.2374 17.3232 11.7626 17.3232 11.4697 17.0303L6.96967 12.5303C6.67678 12.2374 6.67678 11.7626 6.96967 11.4697C7.26256 11.1768 7.73744 11.1768 8.03033 11.4697L11.25 14.6893V3C11.25 2.58579 11.5858 2.25 12 2.25ZM3 15.75C3.41421 15.75 3.75 16.0858 3.75 16.5V18.75C3.75 19.5784 4.42157 20.25 5.25 20.25H18.75C19.5784 20.25 20.25 19.5784 20.25 18.75V16.5C20.25 16.0858 20.5858 15.75 21 15.75C21.4142 15.75 21.75 16.0858 21.75 16.5V18.75C21.75 20.4069 20.4069 21.75 18.75 21.75H5.25C3.59315 21.75 2.25 20.4069 2.25 18.75V16.5C2.25 16.0858 2.58579 15.75 3 15.75Z"/></svg>`, fg: '#4338ca', bg: 'rgba(255,255,255,0.2)', shadow: '0 8px 20px rgba(15, 23, 42, 0.18)' }
+    };
+    const applyLinkIcons = () => { document.querySelectorAll('[data-icon]').forEach(node => { const key = node.getAttribute('data-icon'); const config = linkIconConfig[key]; if (!config) return; node.innerHTML = config.svg; node.style.color = config.fg || '#4338ca'; if (config.bg) node.style.background = config.bg; if (config.shadow) node.style.boxShadow = config.shadow; }); };
+    const calcCompleteness = (p) => {
+      const firstEdu = Array.isArray(p.education_entries) && p.education_entries.length ? p.education_entries[0] : {};
+      const fields = [
+        p.name,
+        p.headline,
+        p.location,
+        firstEdu.school,
+        firstEdu.degree,
+        firstEdu.department,
+        firstEdu.batch_range,
+        firstEdu.current_semester,
+        firstEdu.regno,
+        p.linkedin,
+        p.github,
+        p.resume_url,
+        p.bio,
+        p.skills,
+        p.technologies,
+        Array.isArray(p.experiences) && p.experiences.length > 0,
+        Array.isArray(p.education_entries) && p.education_entries.length > 0,
+        Array.isArray(p.portfolio_projects) && p.portfolio_projects.length > 0,
+      ];
+      const filled = fields.filter(Boolean).length;
+      return Math.min(100, Math.round((filled / fields.length) * 100)) || 0;
+    };
+    const renderSkillChips = (skillsText) => { const wrap = document.getElementById('skills-chips'); if (!wrap) return; wrap.innerHTML = ''; const parts = (skillsText || '').split(/[,|\n]/).map(s => s.trim()).filter(Boolean).slice(0, 25); parts.forEach(s => { const a = document.createElement('span'); a.className = 'inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs border border-brand-600/40 text-brand-700 dark:text-brand-200 bg-brand-500/10'; a.textContent = s; wrap.appendChild(a); }); };
+    const renderTechChips = (technologiesText) => { const wrap = document.getElementById('tech-chips'); if (!wrap) return; wrap.innerHTML = ''; const parts = (technologiesText || '').split(/[ ,|\n]/).map(s => s.trim()).filter(Boolean).slice(0, 30); parts.forEach(t => { const a = document.createElement('span'); a.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs border border-brand-600/40 text-brand-700 dark:text-brand-200 bg-brand-500/10'; a.textContent = t; wrap.appendChild(a); }); };
+    const parseDate = (iso) => { if (!iso) return null; const d = new Date(iso); return Number.isNaN(d.getTime()) ? null : d; };
+    const formatDate = (iso) => { const d = parseDate(iso); if (!d) return null; return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }); };
+    const formatDateRange = (start, end, current) => {
+      const s = formatDate(start);
+      const e = current ? 'Present' : formatDate(end);
+      if (s && e) return `${s} – ${e}`;
+      if (s) return s;
+      return e || '';
+    };
+    const toggleEmpty = (id, hasItems) => { const n = el(id); if (!n) return; n.classList.toggle('hidden', hasItems); };
+
+    const renderExperienceTimeline = (list) => {
+      const wrap = el('experience-list'); if (!wrap) return; wrap.innerHTML = '';
+      const items = Array.isArray(list) ? list.filter(Boolean) : [];
+      if (!items.length) { toggleEmpty('experience-empty', false); return; }
+      toggleEmpty('experience-empty', true);
+      items.forEach(exp => {
+        const card = document.createElement('article');
+        card.className = 'timeline-item rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-4 shadow-sm';
+        const header = document.createElement('div');
+        header.className = 'flex flex-wrap items-center justify-between gap-2';
+        const title = document.createElement('h4');
+        title.className = 'text-sm font-semibold';
+        title.textContent = exp.title || 'Experience';
+        header.appendChild(title);
+        const range = document.createElement('span');
+        range.className = 'text-xs text-black/60 dark:text-white/60';
+        range.textContent = formatDateRange(exp.start_date, exp.end_date, exp.is_current);
+        if (range.textContent) header.appendChild(range);
+        card.appendChild(header);
+        const metaParts = [];
+        if (exp.company || exp.employment_type) metaParts.push([exp.company, exp.employment_type].filter(Boolean).join(' • '));
+        if (exp.location || exp.location_type) metaParts.push([exp.location_type, exp.location].filter(Boolean).join(' • '));
+        if (metaParts.length) {
+          const meta = document.createElement('p');
+          meta.className = 'text-xs text-black/60 dark:text-white/55 mt-1';
+          meta.textContent = metaParts.join('  |  ');
+          card.appendChild(meta);
+        }
+        if (exp.description) {
+          const desc = document.createElement('p');
+          desc.className = 'mt-3 text-sm opacity-80 whitespace-pre-line';
+          desc.textContent = exp.description;
+          card.appendChild(desc);
+        }
+        const media = Array.isArray(exp.media) ? exp.media.filter(m => m && m.url) : [];
+        if (media.length) {
+          const mediaWrap = document.createElement('div');
+          mediaWrap.className = 'mt-3 flex flex-wrap gap-2';
+          media.forEach(m => {
+            const link = document.createElement('a');
+            link.href = m.url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'inline-flex items-center gap-1 px-3 py-1 text-xs rounded-full border border-brand-500/30 text-brand-700 dark:text-brand-200 bg-brand-500/10';
+            link.innerHTML = `<span class="icon text-sm">attach_file</span>${m.title || 'Attachment'}`;
+            mediaWrap.appendChild(link);
+          });
+          card.appendChild(mediaWrap);
+        }
+        wrap.appendChild(card);
+      });
+    };
+
+    const renderEducationList = (education) => {
+      const wrap = el('education-list'); if (!wrap) return; wrap.innerHTML = '';
+      const items = Array.isArray(education) ? education.filter(Boolean) : [];
+      if (!items.length) { toggleEmpty('education-empty', false); return; }
+      toggleEmpty('education-empty', true);
+      items.forEach(ed => {
+        const card = document.createElement('article');
+        card.className = 'rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-4';
+        const title = document.createElement('h4');
+        title.className = 'font-semibold text-sm';
+        title.textContent = ed.school || 'Institution';
+        card.appendChild(title);
+        // New subtitle composition: degree • department (previously degree • field_of_study)
+        const subtitleParts = [ed.degree, ed.department].filter(Boolean);
+        if (subtitleParts.length) {
+          const sub = document.createElement('p');
+          sub.className = 'text-xs text-black/60 dark:text-white/55 mt-1';
+          sub.textContent = subtitleParts.join(' • ');
+          card.appendChild(sub);
+        }
+        // Batch range + current semester (if available)
+        const academicMetaParts = [];
+        if (ed.batch_range) academicMetaParts.push(ed.batch_range); // e.g. 2022-2026
+        if (ed.current_semester) academicMetaParts.push(`Sem ${ed.current_semester}`);
+        if (ed.regno) academicMetaParts.push(ed.regno);
+        if (academicMetaParts.length) {
+          const metaEl = document.createElement('p');
+          metaEl.className = 'text-xs text-black/55 dark:text-white/50 mt-1';
+          metaEl.textContent = academicMetaParts.join('  |  ');
+          card.appendChild(metaEl);
+        }
+        // Extras: grade + activities
+        const extras = [ed.grade, ed.activities].filter(Boolean).join(' • ');
+        if (extras) {
+          const extraEl = document.createElement('p');
+          extraEl.className = 'text-xs text-black/55 dark:text-white/50 mt-1';
+          extraEl.textContent = extras;
+          card.appendChild(extraEl);
+        }
+        if (ed.description) {
+          const desc = document.createElement('p');
+          desc.className = 'text-sm opacity-80 mt-2 whitespace-pre-line';
+          desc.textContent = ed.description;
+          card.appendChild(desc);
+        }
+        // Graceful fallback: if legacy fields exist (older cached data), show date range / field_of_study
+        const legacyParts = [];
+        if (!subtitleParts.length && ed.field_of_study) legacyParts.push(ed.field_of_study);
+        if (ed.start_date || ed.end_date) legacyParts.push(formatDateRange(ed.start_date, ed.end_date, false));
+        const legacyStr = legacyParts.filter(Boolean).join(' • ');
+        if (legacyStr) {
+          const legacyEl = document.createElement('p');
+          legacyEl.className = 'text-xs text-black/45 dark:text-white/40 mt-2';
+          legacyEl.textContent = legacyStr;
+          card.appendChild(legacyEl);
+        }
+        wrap.appendChild(card);
+      });
+    };
+
+    const renderCertificationsList = (certs) => {
+      const wrap = el('certifications-list'); if (!wrap) return; wrap.innerHTML = '';
+      const items = Array.isArray(certs) ? certs.filter(Boolean) : [];
+      if (!items.length) { toggleEmpty('certifications-empty', false); return; }
+      toggleEmpty('certifications-empty', true);
+      items.forEach(cert => {
+        const card = document.createElement('article');
+        card.className = 'rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-4';
+        const title = document.createElement('h4');
+        title.className = 'font-semibold text-sm';
+        title.textContent = cert.name || 'Certification';
+        card.appendChild(title);
+        const meta = [];
+        if (cert.issuing_org) meta.push(cert.issuing_org);
+        if (cert.issue_date) meta.push(formatDate(cert.issue_date));
+        if (cert.does_not_expire) meta.push('No expiry'); else if (cert.expiration_date) meta.push(`Valid till ${formatDate(cert.expiration_date)}`);
+        if (meta.length) {
+          const metaEl = document.createElement('p');
+          metaEl.className = 'text-xs text-black/60 dark:text-white/55 mt-1';
+          metaEl.textContent = meta.join(' • ');
+          card.appendChild(metaEl);
+        }
+        if (cert.description) {
+          const desc = document.createElement('p');
+          desc.className = 'text-sm opacity-80 mt-2 whitespace-pre-line';
+          desc.textContent = cert.description;
+          card.appendChild(desc);
+        }
+        if (cert.credential_id || cert.credential_url) {
+          const cred = document.createElement('p');
+          cred.className = 'text-xs text-black/55 dark:text-white/55 mt-2 flex items-center gap-2';
+          if (cert.credential_id) cred.textContent = `Credential • ${cert.credential_id}`;
+          if (cert.credential_url) {
+            const link = document.createElement('a');
+            link.href = cert.credential_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.className = 'text-brand-600 dark:text-brand-300';
+            link.textContent = cert.credential_id ? 'Verify' : 'View credential';
+            cred.appendChild(link);
+          }
+          card.appendChild(cred);
+        }
+        wrap.appendChild(card);
+      });
+    };
+
+    const renderPortfolioGrid = (projects) => {
+      const wrap = el('portfolio-grid'); if (!wrap) return; wrap.innerHTML = '';
+      const items = Array.isArray(projects) ? projects.filter(Boolean) : [];
+      if (!items.length) { toggleEmpty('portfolio-empty', false); return; }
+      toggleEmpty('portfolio-empty', true);
+      items.forEach(project => {
+        const card = document.createElement('article');
+        card.className = 'rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-4 flex flex-col gap-3';
+        const header = document.createElement('div');
+        header.className = 'flex items-start justify-between gap-2';
+        const title = document.createElement('h4');
+        title.className = 'font-semibold text-sm';
+        title.textContent = project.name || 'Project';
+        header.appendChild(title);
+        const range = formatDateRange(project.start_date, project.end_date, false);
+        if (range) {
+          const date = document.createElement('span');
+          date.className = 'text-xs text-black/55 dark:text-white/50';
+          date.textContent = range;
+          header.appendChild(date);
+        }
+        card.appendChild(header);
+        if (project.description) {
+          const desc = document.createElement('p');
+          desc.className = 'text-sm opacity-80 whitespace-pre-line';
+          desc.textContent = project.description;
+          card.appendChild(desc);
+        }
+        if (Array.isArray(project.tech_stack) && project.tech_stack.length) {
+          const stack = document.createElement('div');
+          stack.className = 'flex flex-wrap gap-2';
+          project.tech_stack.slice(0, 6).forEach(t => {
+            const chip = document.createElement('span');
+            chip.className = 'inline-flex items-center gap-1 px-3 py-1 text-xs rounded-full border border-brand-600/30 text-brand-700 dark:text-brand-200 bg-brand-500/10';
+            chip.textContent = t;
+            stack.appendChild(chip);
+          });
+          card.appendChild(stack);
+        }
+        if (project.url) {
+          const link = document.createElement('a');
+          link.href = project.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.className = 'text-xs text-brand-600 dark:text-brand-300 inline-flex items-center gap-1';
+          link.innerHTML = '<span class="icon text-sm">open_in_new</span>View project';
+          card.appendChild(link);
+        }
+        if (Array.isArray(project.team) && project.team.length) {
+          const names = project.team.map(member => member?.name).filter(Boolean).join(', ');
+          if (names) {
+            const team = document.createElement('p');
+            team.className = 'text-xs text-black/55 dark:text-white/55';
+            team.textContent = `Team: ${names}`;
+            card.appendChild(team);
+          }
+        }
+        wrap.appendChild(card);
+      });
+    };
+
+    const renderPublicationsList = (publications) => {
+      const wrap = el('publications-list'); if (!wrap) return; wrap.innerHTML = '';
+      const items = Array.isArray(publications) ? publications.filter(Boolean) : [];
+      if (!items.length) { toggleEmpty('publications-empty', false); return; }
+      toggleEmpty('publications-empty', true);
+      items.forEach(pub => {
+        const card = document.createElement('article');
+        card.className = 'rounded-2xl border border-black/5 dark:border-white/10 bg-white/80 dark:bg-brand-900/55 backdrop-blur p-4';
+        const title = document.createElement('h4');
+        title.className = 'font-semibold text-sm';
+        title.textContent = pub.title || 'Publication';
+        card.appendChild(title);
+        const metaParts = [];
+        if (pub.publisher) metaParts.push(pub.publisher);
+        if (pub.publication_date) metaParts.push(formatDate(pub.publication_date));
+        if (metaParts.length) {
+          const meta = document.createElement('p');
+          meta.className = 'text-xs text-black/60 dark:text-white/55 mt-1';
+          meta.textContent = metaParts.join(' • ');
+          card.appendChild(meta);
+        }
+        if (Array.isArray(pub.authors) && pub.authors.length) {
+          const authors = document.createElement('p');
+          authors.className = 'text-xs text-black/55 dark:text-white/50 mt-1';
+          authors.textContent = `Authors: ${pub.authors.join(', ')}`;
+          card.appendChild(authors);
+        }
+        if (pub.abstract) {
+          const abs = document.createElement('p');
+          abs.className = 'text-sm opacity-80 mt-2 whitespace-pre-line';
+          abs.textContent = pub.abstract;
+          card.appendChild(abs);
+        }
+        if (pub.url) {
+          const link = document.createElement('a');
+          link.href = pub.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.className = 'text-xs text-brand-600 dark:text-brand-300 inline-flex items-center gap-1 mt-2';
+          link.innerHTML = '<span class="icon text-sm">open_in_new</span>View publication';
+          card.appendChild(link);
+        }
+        wrap.appendChild(card);
+      });
+    };
+
+    const populateProfile = (profile) => {
+      const name = profile.name || 'Add your name';
+      setText('profileName', name, 'Add your name');
+      setText('profileHeadline', profile.headline, 'Add a headline to introduce yourself.');
+      setText('profileLocation', profile.location, '');
+      setText('info-batch-inline', (profile.batch?.from || profile.batch?.to) ? `${profile.batch?.from || '?'} - ${profile.batch?.to || '?'}` : '—');
+      const img = el('profileImage'); const fallback = el('profileImageFallback'); const initials = name.split(' ').filter(Boolean).map(s => s[0]?.toUpperCase()).slice(0, 2).join('');
+      if (profile.profile_image_url) { img.src = profile.profile_image_url; img.classList.remove('hidden'); fallback.classList.add('hidden'); } else { el('profileInitials').textContent = initials || '?'; img.classList.add('hidden'); fallback.classList.remove('hidden'); }
+      const score = Number(profile.verification_score ?? 0); el('verifyScore').textContent = isNaN(score) ? '--' : String(score); const badge = el('verifyBadge'); if (!isNaN(score) && score > 0) { badge.classList.remove('hidden'); badge.classList.toggle('bg-emerald-600', score >= 70); badge.classList.toggle('bg-amber-600', score < 70 && score >= 40); badge.classList.toggle('bg-rose-600', score < 40); }
+      const pct = calcCompleteness(profile); el('completePct').textContent = pct + '%'; el('completeBar').style.width = pct + '%';
+      setText('info-name', profile.name); setText('info-college', profile.college?.name || profile.college); setText('info-batch', (profile.batch?.from || profile.batch?.to) ? `${profile.batch?.from || '?'} - ${profile.batch?.to || '?'}` : '--'); setText('info-dob', profile.dob); setText('info-phone', profile.phone); setText('info-email', profile.email);
+      const linkEntries = [
+        ['link-linkedin', profile.linkedin],
+        ['link-github', profile.github],
+        ['link-leetcode', profile.leetcode],
+        ['link-portfolio', profile.portfolio_url],
+        ['link-website', profile.website],
+        ['link-twitter', profile.twitter],
+        ['link-instagram', profile.instagram],
+        ['link-medium', profile.medium],
+        ['link-resume', profile.resume_url],
+      ];
+      const linksShown = linkEntries.map(([id, value]) => setLink(id, value)).filter(Boolean).length;
+      const linksList = el('links-list');
+      if (linksList) {
+        linksList.classList.toggle('hidden', !linksShown);
+      }
+      toggleEmpty('links-empty', linksShown > 0);
+      setText('info-bio', profile.bio, 'Add a short summary about yourself.'); setText('info-projects', profile.project_info, 'Share context about the work you are exploring, hackathons or collaborations.'); setText('info-publications', profile.publications, 'Add commentary on published work, citations or speaking engagements.'); setText('info-achievements', profile.achievements); setText('info-achievements-activity', profile.achievements, 'Capture awards, recognitions or milestones.'); setText('info-experience', profile.experience, 'Summarise your professional focus and strengths.'); setText('info-specializations', Array.isArray(profile.specializations) ? profile.specializations.join(', ') : profile.specializations); setText('info-technologies', profile.technologies); setText('info-skills', profile.skills); setText('info-certifications', profile.certifications); setText('info-languages', profile.languages); setText('info-interests', profile.interests);
+      renderSkillChips(profile.skills); renderTechChips(profile.technologies); renderExperienceTimeline(profile.experiences); renderEducationList(profile.education_entries); renderCertificationsList(profile.certification_entries); renderPortfolioGrid(profile.portfolio_projects); renderPublicationsList(profile.publication_entries);
+      document.querySelectorAll('.skeleton').forEach(n => n.classList.remove('skeleton'));
+    };
+
+    const applyNavProfile = (profile) => {
+      if (!profile) return;
+      const navProfile = el('navProfile');
+      const navProfileImg = el('navProfileImg');
+      const navProfileInitial = el('navProfileInitial');
+      const navProfileMobile = el('navProfileMobile');
+      const navProfileMobileLabel = navProfileMobile ? navProfileMobile.querySelector('[data-profile-name]') : null;
+      let initials = 'ME';
+      if (profile.name) {
+        initials = profile.name
+          .split(' ')
+          .filter(Boolean)
+          .map(part => part[0]?.toUpperCase())
+          .slice(0, 2)
+          .join('') || 'ME';
+      }
+      if (navProfileInitial) {
+        navProfileInitial.textContent = initials;
+        navProfileInitial.classList.remove('hidden');
+      }
+      if (profile.profile_image_url && navProfileImg) {
+        navProfileImg.src = profile.profile_image_url;
+        navProfileImg.classList.remove('hidden');
+        if (navProfileInitial) navProfileInitial.classList.add('hidden');
+      } else if (navProfileImg) {
+        navProfileImg.classList.add('hidden');
+      }
+      if (navProfile) {
+        navProfile.classList.remove('hidden');
+        navProfile.setAttribute('title', profile.name || 'Profile');
+      }
+      if (navProfileMobile) {
+        navProfileMobile.classList.remove('hidden');
+        if (navProfileMobileLabel) {
+          const firstName = (profile.name || '').split(/\s+/).filter(Boolean)[0];
+          navProfileMobileLabel.textContent = firstName ? `Hi, ${firstName}` : 'My profile';
+        }
+      }
+    };
+    // Token refresh helper - attempts to refresh access token if expired or about to expire
+    const refreshTokenIfNeeded = async () => {
+      const REFRESH_TOKEN_KEY = 'px_refresh_token';
+      const TOKEN_EXPIRES_KEY = 'px_token_expires_at';
+      const USER_TOKEN_KEY = 'px_token';
+
+      const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+      const expiresAt = localStorage.getItem(TOKEN_EXPIRES_KEY);
+      const accessToken = localStorage.getItem(USER_TOKEN_KEY);
+
+      // If no refresh token, can't refresh
+      if (!refreshToken) return false;
+
+      // If access token exists and not expired (with 5 min buffer), no refresh needed
+      if (accessToken && expiresAt) {
+        const expiryTime = parseInt(expiresAt, 10);
+        const bufferMs = 5 * 60 * 1000; // 5 minutes
+        if (Date.now() < (expiryTime - bufferMs)) {
+          return true; // Token still valid
+        }
+      }
+
+      // Need to refresh
+      try {
+        console.log('[Profile] Token expired or missing. Attempting refresh...');
+        const res = await fetch(`${API}/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        if (!res.ok) {
+          console.warn('[Profile] Refresh failed:', res.status);
+          return false;
+        }
+        const data = await res.json();
+        if (data.access_token) {
+          console.log('[Profile] Token refreshed successfully.');
+          localStorage.setItem(USER_TOKEN_KEY, data.access_token);
+          if (data.refresh_token) {
+            localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+          }
+          if (data.expires_in) {
+            const newExpiresAt = Date.now() + (data.expires_in * 1000);
+            localStorage.setItem(TOKEN_EXPIRES_KEY, newExpiresAt.toString());
+          }
+          return true;
+        }
+        return false;
+      } catch (e) {
+        console.error('[Profile] Token refresh failed:', e);
+        return false;
+      }
+    };
+
+    const loadProfile = async () => {
+      // First attempt to refresh token if needed
+      await refreshTokenIfNeeded();
+
+      // Re-read token after potential refresh
+      const currentToken = localStorage.getItem('px_token');
+      if (!currentToken) { window.location.href = 'login.html'; return; }
+
+      statusEl.textContent = 'Loading profile…';
+      try {
+        const res = await fetch(`${API}/api/me`, { headers: { Authorization: `Bearer ${currentToken}` } });
+        if (res.status === 401) { localStorage.removeItem('px_token'); window.location.href = 'login.html'; return; }
+        const data = await res.json();
+        const profile = data?.profile || {};
+        populateProfile(profile);
+        window.__PX_PROFILE_SNAPSHOT = profile;
+        if (typeof window.__PX_NAV_APPLY === 'function') {
+          window.__PX_NAV_APPLY(profile);
+        }
+        statusEl.textContent = '';
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = 'Failed to load profile. Please try again.';
+      } finally {
+        // Hide loader
+        document.body.classList.add('loaded');
+        const loader = document.getElementById('pageLoader');
+        if (loader) {
+          setTimeout(() => { loader.style.display = 'none'; }, 450);
+        }
+      }
+    };
+
+    el('copyPhone').addEventListener('click', () => { const v = el('info-phone').textContent?.trim(); if (v && v !== '—' && v !== '--') navigator.clipboard.writeText(v); });
+    el('copyEmail').addEventListener('click', () => { const v = el('info-email').textContent?.trim(); if (v && v !== '—' && v !== '--') navigator.clipboard.writeText(v); });
+
+    (function () {
+      const tokenStored = localStorage.getItem('px_token');
+      if (!tokenStored) return;
+      document.querySelectorAll('a[href="login.html"], a[href="signup.html"]').forEach(a => a.classList.add('hidden'));
+      [el('navProfile'), el('navProfileMobile')].forEach(node => node && node.classList.remove('hidden'));
+      [el('signOutBtn'), el('signOutBtnMobile')].forEach(node => node && node.classList.remove('hidden'));
+      window.__PX_NAV_APPLY = applyNavProfile;
+      if (window.__PX_PROFILE_SNAPSHOT) {
+        applyNavProfile(window.__PX_PROFILE_SNAPSHOT);
+      }
+    })();
+
+    const handleSignOut = () => {
+      localStorage.removeItem('px_token');
+      if (typeof window.__PX_CLOSE_MOBILE_NAV === 'function') {
+        window.__PX_CLOSE_MOBILE_NAV();
+      }
+      window.location.href = 'login.html';
+    };
+    [el('signOutBtn'), el('signOutBtnMobile')].forEach(btn => {
+      if (!btn) return;
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        handleSignOut();
+      });
+    });
+    applyLinkIcons();
+    loadProfile();
+  </script>
+</body>
+
+</html>

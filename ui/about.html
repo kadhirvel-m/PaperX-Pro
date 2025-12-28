@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth overflow-x-hidden">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>About Us — Paper X</title>
+    <link rel="icon" type="image/x-icon" href="assets/img/favicon.svg">
+
+    <!-- Inter + Material Symbols -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,600,0,0"
+        rel="stylesheet">
+
+    <!-- Tailwind (forms/typography/aspect-ratio) -->
+    <link rel="stylesheet" href="assets/css/tailwind.css" />
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                container: { center: true, padding: '1rem' },
+                extend: {
+                    fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        brand: { 900: '#1E1E2F', 700: '#4C2A59', 500: '#9E4B8A' },
+                        brandlt: { 50: '#FAF5FB', 100: '#F3E7F2', 200: '#E7D0E4', 300: '#D9B4D3', 400: '#C88DBA', 500: '#9E4B8A', 700: '#4C2A59', 900: '#1E1E2F' },
+                        ink: '#1E1E2F', plum: '#4C2A59', orchid: '#9E4B8A'
+                    },
+                    boxShadow: {
+                        glow: '0 8px 30px rgba(158,75,138,0.35)',
+                        soft: '0 10px 30px rgba(0,0,0,0.25)',
+                        card: '0 24px 60px rgba(30,30,47,0.35)'
+                    },
+                    backgroundImage: {
+                        'hero-dark': 'radial-gradient(1000px 600px at 50% -10%, rgba(158,75,138,0.28), transparent 60%), linear-gradient(180deg, #1E1E2F 0%, #201934 35%, #141321 100%)',
+                        'hero-light': 'radial-gradient(1000px 600px at 50% -10%, rgba(158,75,138,0.18), transparent 60%), linear-gradient(180deg, #FFFFFF 0%, #FBF8FC 45%, #F7F2F9 100%)'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .material-symbols-rounded {
+            vertical-align: -6px
+        }
+
+        .gradient-hero-text {
+            display: inline-block;
+            background-image: linear-gradient(90deg, #1E1E2F, #4C2A59, #9E4B8A, #4C2A59, #1E1E2F);
+            background-size: 200% 200%;
+            animation: gradient-shift 4s ease-in-out infinite;
+            color: transparent;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            -webkit-box-decoration-break: clone;
+            box-decoration-break: clone
+        }
+
+        .dark .gradient-hero-text {
+            background-image: linear-gradient(90deg, #EFA3DC, #CA6CB3, #FFFFFF, #CA6CB3, #EFA3DC)
+        }
+
+        @keyframes gradient-shift {
+            0% {
+                background-position: 0% 50%
+            }
+
+            50% {
+                background-position: 100% 50%
+            }
+
+            100% {
+                background-position: 0% 50%
+            }
+        }
+
+        .dark body {
+            background-image: linear-gradient(to left top, #1e1e2f, #242138, #2b2440, #332649, #3d2850, #3f254a, #402244, #401f3e, #34182d, #26131e, #190b11, #000000);
+            background-repeat: no-repeat;
+            background-size: cover;
+        }
+
+        /* Mobile nav transitions (same as index) */
+        #mobileNavBackdrop {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .25s ease
+        }
+
+        #mobileNavPanel {
+            opacity: 0;
+            transform: translateY(-12px);
+            pointer-events: none;
+            transition: opacity .25s ease, transform .25s ease
+        }
+
+        #mobileNavBackdrop[data-open="true"],
+        #mobileNavBackdrop.open {
+            opacity: 1;
+            pointer-events: auto
+        }
+
+        #mobileNavPanel[data-open="true"],
+        #mobileNavPanel.open {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto
+        }
+
+        /* Footer styling */
+        .app-footer {
+            position: relative;
+            overflow: hidden;
+            color: #1E1E2F;
+            background: linear-gradient(135deg, rgba(250, 245, 251, 0.98) 0%, rgba(231, 208, 228, 0.96) 45%, rgba(201, 141, 186, 0.94) 100%);
+        }
+
+        .app-footer::before,
+        .app-footer::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0.45;
+            background: radial-gradient(circle at 15% 20%, rgba(76, 42, 89, 0.25), transparent 55%), radial-gradient(circle at 85% 75%, rgba(158, 75, 138, 0.2), transparent 60%);
+        }
+
+        .app-footer::after {
+            opacity: 0.25;
+            background: radial-gradient(circle at 70% 15%, rgba(255, 255, 255, 0.55), transparent 65%), radial-gradient(circle at 25% 85%, rgba(255, 255, 255, 0.35), transparent 70%);
+        }
+
+        .app-footer__content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .app-footer h4,
+        .app-footer__brand p,
+        .app-footer__bottom {
+            color: inherit;
+        }
+
+        .app-footer a {
+            color: inherit;
+            opacity: 0.8;
+            transition: opacity 0.25s ease, transform 0.25s ease, color 0.25s ease;
+        }
+
+        .app-footer a:hover {
+            opacity: 1;
+            color: #4C2A59;
+            transform: translateY(-2px);
+        }
+
+        .app-footer__social a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9999px;
+            width: 2.5rem;
+            height: 2.5rem;
+            background: rgba(255, 255, 255, 0.8);
+            color: #4C2A59;
+            box-shadow: 0 12px 24px rgba(76, 42, 89, 0.15);
+        }
+
+        .app-footer__social a:hover {
+            background: #4C2A59;
+            color: white;
+            transform: translateY(-4px);
+        }
+
+        .app-footer__divider {
+            border-top: 1px solid rgba(30, 30, 47, 0.12);
+            margin-top: 3rem;
+            padding-top: 2rem;
+        }
+
+        .app-footer__list li+li {
+            margin-top: 0.75rem;
+        }
+
+        .app-footer__newsletter input[type="email"] {
+            background: rgba(255, 255, 255, 0.9);
+            border: none;
+            border-radius: 9999px;
+            padding: 0.75rem 1rem 0.75rem 2.75rem;
+            font-size: 0.9375rem;
+            color: #1E1E2F;
+            min-width: 0;
+            box-shadow: 0 10px 25px rgba(76, 42, 89, 0.12);
+            width: 100%;
+            display: block;
+        }
+
+        .app-footer__newsletter input[type="email"]::placeholder {
+            color: rgba(30, 30, 47, 0.45);
+        }
+
+        .app-footer__newsletter-icon {
+            position: absolute;
+            inset-inline-start: 1rem;
+            inset-block-start: 50%;
+            transform: translateY(-50%);
+            font-size: 1.25rem;
+            color: rgba(76, 42, 89, 0.65);
+        }
+
+        .app-footer__cta-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            border-radius: 9999px;
+            padding: 0.75rem 1.5rem;
+            font-weight: 600;
+            background: linear-gradient(90deg, #9E4B8A 0%, #B06AB3 50%, #FF7FD1 100%);
+            color: #fff;
+            box-shadow: 0 10px 30px rgba(158, 75, 138, 0.28);
+        }
+
+        .app-footer__cta-btn:hover {
+            box-shadow: 0 16px 36px rgba(158, 75, 138, 0.38);
+        }
+
+        /* Fix overlap of input & button in newsletter */
+        .app-footer__newsletter {
+            width: 100%;
+        }
+
+        .app-footer__newsletter button.app-footer__cta-btn {
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        @media (min-width:640px) {
+            .app-footer__newsletter {
+                align-items: center;
+            }
+        }
+
+        .dark .app-footer {
+            color: rgba(248, 243, 255, 0.92);
+            background: linear-gradient(135deg, rgba(30, 30, 47, 0.98) 0%, rgba(40, 22, 52, 0.96) 35%, rgba(76, 42, 89, 0.94) 70%, rgba(158, 75, 138, 0.92) 100%);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .dark .app-footer::before {
+            opacity: 0.65;
+            background: radial-gradient(circle at 25% 25%, rgba(158, 75, 138, 0.35), transparent 60%), radial-gradient(circle at 80% 70%, rgba(76, 42, 89, 0.32), transparent 55%);
+        }
+
+        .dark .app-footer::after {
+            opacity: 0.4;
+            background: radial-gradient(circle at 60% 20%, rgba(255, 255, 255, 0.18), transparent 60%), radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.12), transparent 65%);
+        }
+
+        .dark .app-footer a:hover {
+            color: #FF7FD1;
+        }
+
+        .dark .app-footer__social a {
+            background: rgba(255, 255, 255, 0.14);
+            color: rgba(255, 255, 255, 0.85);
+            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
+        }
+
+        .dark .app-footer__social a:hover {
+            background: rgba(255, 255, 255, 0.25);
+            color: #1E1E2F;
+        }
+
+        .dark .app-footer__divider {
+            border-top-color: rgba(255, 255, 255, 0.12);
+        }
+
+        .dark .app-footer__newsletter input[type="email"] {
+            background: rgba(29, 21, 39, 0.85);
+            color: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        }
+
+        .dark .app-footer__newsletter input[type="email"]::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Light mode heading color override */
+        html:not(.dark) h1:not(.gradient-hero-text),
+        html:not(.dark) h2:not(.gradient-hero-text),
+        html:not(.dark) h3:not(.gradient-hero-text),
+        html:not(.dark) h4:not(.gradient-hero-text),
+        html:not(.dark) h5:not(.gradient-hero-text),
+        html:not(.dark) h6:not(.gradient-hero-text) {
+            color: #1E1E2F;
+        }
+    </style>
+
+    <script>
+            // Theme boot
+            (() => {
+                const s = localStorage.getItem('px_theme'); const prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                const dark = s ? s === 'dark' : prefers; if (dark) document.documentElement.classList.add('dark');
+            })();
+    </script>
+</head>
+
+<body
+    class="min-h-screen font-sans antialiased text-neutral-900 dark:text-white bg-hero-light dark:bg-hero-dark transition-colors overflow-x-hidden">
+
+    <!-- Top announcement (optional, kept for consistency) -->
+    <div
+        class="w-full text-xs text-neutral-700 dark:text-white/80 bg-brandlt-100/70 dark:bg-brand-700/20 backdrop-blur border-b border-black/5 dark:border-white/10">
+        <div class="container flex items-center gap-2 py-2">
+            <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-brandlt-200 dark:bg-brand-500/20 ring-1 ring-brandlt-300 dark:ring-brand-500/40">New</span>
+            <p class="truncate">We’re growing our team — see open roles on the Careers page.</p>
+            <span class="ml-auto">→</span>
+        </div>
+    </div>
+
+    <!-- Navbar (same structure/classes as index) -->
+    <header
+        class="fixed top-0 left-0 right-0 z-40 w-full bg-white/70 dark:bg-brand-900/60 backdrop-blur supports-[backdrop-filter]:saturate-150 border-b border-black/5 dark:border-white/10">
+        <div class="container flex items-center justify-between py-4">
+            <a href="index.html" class="flex items-center gap-3" aria-label="Paper X Home">
+                <img src="assets/img/logo-light.svg" alt="Paper X" class="h-10 w-auto dark:hidden">
+                <img src="assets/img/logo-dark.svg" alt="Paper X" class="h-10 w-auto hidden dark:block">
+            </a>
+            <nav class="hidden md:flex items-center gap-6 text-sm text-neutral-700 dark:text-white/85">
+                <a class="hover:text-brandlt-900 dark:hover:text-white" href="index.html">Home</a>
+                <a class="hover:text-brandlt-900 dark:hover:text-white" href="about.html">About</a>
+                <button
+                    class="group inline-flex items-center gap-1 hover:text-brandlt-900 dark:hover:text-white transition">Products
+                    <span
+                        class="material-symbols-rounded text-base opacity-70 group-hover:opacity-100">expand_more</span></button>
+                <button
+                    class="group inline-flex items-center gap-1 hover:text-brandlt-900 dark:hover:text-white transition">Solutions
+                    <span
+                        class="material-symbols-rounded text-base opacity-70 group-hover:opacity-100">expand_more</span></button>
+                <a class="hover:text-brandlt-900 dark:hover:text-white" href="contact.html">Contact</a>
+                <a class="hover:text-brandlt-900 dark:hover:text-white" href="help.html">Help</a>
+                <a class="hover:text-brandlt-900 dark:hover:text-white" href="index.html#pricing">Pricing</a>
+            </nav>
+            <div class="hidden md:flex items-center gap-2">
+                <button id="themeToggle" data-theme-toggle
+                    class="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg:white/5"
+                    aria-label="Toggle theme">
+                    <span class="material-symbols-rounded">dark_mode</span>
+                    <span class="hidden sm:block">Theme</span>
+                </button>
+                <a href="login.html"
+                    class="text-sm text-neutral-700 dark:text-white/85 hover:text-brandlt-900 dark:hover:text-white px-3 py-2 rounded-full">Log
+                    in</a>
+                <a href="signup.html"
+                    class="inline-flex items-center justify-center rounded-full bg-brand-500 text-white text-sm font-semibold px-4 py-2.5 hover:shadow-glow transition">Sign
+                    up</a>
+                <a id="navProfile" href="profile.html" title="Profile"
+                    class="hidden items-center justify-center w-10 h-10 rounded-full overflow-hidden border border-black/10 dark:border-white/10 bg-white/90 dark:bg-brand-900/60">
+                    <img id="navProfileImg" alt="Profile" class="w-full h-full object-cover hidden" />
+                    <span id="navProfileInitial" class="text-xs font-semibold">ME</span>
+                </a>
+                <button id="signOutBtn" type="button" title="Sign out" aria-label="Sign out"
+                    class="hidden items-center gap-2 rounded-full border border-black/10 dark:border-white/15 px-3 py-1.5 text-sm text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/5 transition">
+                    <span class="material-symbols-rounded text-base">logout</span>
+                    <span>Sign out</span>
+                </button>
+            </div>
+            <div class="md:hidden flex items-center gap-2">
+                <button type="button" data-theme-toggle aria-label="Toggle theme"
+                    class="inline-flex items-center justify-center size-10 rounded-full ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg-white/5 transition">
+                    <span class="material-symbols-rounded">dark_mode</span>
+                </button>
+                <button id="mobileNavToggle" type="button" aria-expanded="false" aria-controls="mobileNavPanel"
+                    class="inline-flex items-center justify-center size-10 rounded-full ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg:white/5 transition">
+                    <span class="sr-only">Toggle navigation</span>
+                    <span class="material-symbols-rounded" data-icon>menu</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Mobile drawer (hidden by default to prevent horizontal overflow) -->
+    <div id="mobileNavBackdrop" aria-hidden="true"
+        class="hidden md:hidden fixed inset-0 z-40 bg-black/60 dark:bg-black/80 backdrop-blur-sm"></div>
+    <nav id="mobileNavPanel" aria-hidden="true"
+        class="hidden md:hidden fixed inset-x-4 top-24 z-50 flex flex-col gap-5 max-h-[calc(100vh-6.5rem)] overflow-y-auto rounded-3xl border border-black/10 dark:border-white/10 bg-white/95 dark:bg-brand-900/95 shadow-card backdrop-blur supports-[backdrop-filter]:backdrop-blur-xl p-6">
+        <div class="flex flex-col gap-2 text-sm text-neutral-700 dark:text-white/80">
+            <a href="index.html" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Home</a>
+            <a href="#values" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Values</a>
+            <a href="#journey" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Journey</a>
+            <a href="#team" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Team</a>
+            <a href="contact.html" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Contact</a>
+            <a href="help.html" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Help</a>
+            <a href="index.html#pricing" data-close-mobile-nav
+                class="rounded-xl px-3 py-2 hover:bg-brandlt-100/70 hover:dark:bg-brand-700/20 transition">Pricing</a>
+        </div>
+        <div class="flex flex-col gap-3 border-t border-black/5 dark:border-white/10 pt-4">
+            <a href="login.html" data-close-mobile-nav
+                class="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium ring-1 ring-black/10 dark:ring-white/15 text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/10 transition">Log
+                in</a>
+            <a href="signup.html" data-close-mobile-nav
+                class="inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold text-white bg-gradient-to-r from-[#9E4B8A] via-[#B06AB3] to-[#FF7FD1] shadow-[0_4px_18px_-6px_rgba(158,75,138,0.6)] hover:shadow-[0_6px_24px_-8px_rgba(158,75,138,0.7)] transition">Sign
+                up</a>
+            <a id="navProfileMobile" href="profile.html" data-close-mobile-nav
+                class="hidden inline-flex items-center gap-2 rounded-xl border border-black/10 dark:border-white/15 px-4 py-2 text-sm text-neutral-700 dark:text-white/80 bg-white/70 dark:bg-brand-900/60">
+                <span class="material-symbols-rounded text-base">account_circle</span>
+                <span data-profile-name>My profile</span>
+            </a>
+            <button id="signOutBtnMobile" type="button"
+                class="hidden inline-flex items-center gap-2 rounded-full border border-black/10 dark:border-white/15 px-4 py-2 text-sm text-neutral-700 dark:text-white/80 hover:bg-black/5 dark:hover:bg-white/10 transition">
+                <span class="material-symbols-rounded text-base">logout</span>
+                <span>Sign out</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- HERO (Unity → Team photo) -->
+    <section class="relative overflow-hidden">
+        <div
+            class="pointer-events-none absolute -top-24 -right-24 size-[420px] rounded-full bg-brand-500/20 blur-3xl dark:blur-[90px]">
+        </div>
+        <div
+            class="pointer-events-none absolute top-24 -left-24 size-[360px] rounded-full bg-brand-700/20 blur-3xl dark:blur-[90px]">
+        </div>
+
+        <div class="container max-w-6xl py-16 md:py-24">
+            <div class="grid lg:grid-cols-[1.1fr_0.9fr] gap-10 items-center">
+                <div>
+                    <h1 class="text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">We
+                        grow together.</h1>
+                    <p class="mt-5 text-lg md:text-xl text-neutral-600 dark:text-white/75 max-w-2xl">PaperX is built by
+                        students, mentors, and engineers who care about exam success and real learning.Unity is our
+                        superpower.</p>
+                    <div class="mt-8 flex items-center gap-4">
+                        <div class="flex -space-x-3">
+                            <img class="size-10 rounded-full ring-2 ring-white dark:ring-brand-900 object-cover"
+                                src="https://i.pravatar.cc/60?img=11" alt="">
+                            <img class="size-10 rounded-full ring-2 ring-white dark:ring-brand-900 object-cover"
+                                src="https://i.pravatar.cc/60?img=15" alt="">
+                            <img class="size-10 rounded-full ring-2 ring-white dark:ring-brand-900 object-cover"
+                                src="https://i.pravatar.cc/60?img=32" alt="">
+                            <img class="size-10 rounded-full ring-2 ring-white dark:ring-brand-900 object-cover"
+                                src="https://i.pravatar.cc/60?img=5" alt="">
+                        </div>
+                        <p class="text-sm text-neutral-600 dark:text-white/70">A tiny team with big energy ✨</p>
+                    </div>
+                </div>
+                <!-- Team Bento Grid -->
+                <div
+                    class="relative rounded-3xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-brand-900/40 backdrop-blur">
+                    <div class="grid grid-cols-4 sm:grid-cols-6 auto-rows-[100px] sm:auto-rows-[120px] gap-1.5 p-1.5">
+                        <!-- Large feature image -->
+                        <img class="col-span-4 sm:col-span-4 sm:row-span-3 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about1.png" alt="Team working together">
+
+                        <!-- Tall image -->
+                        <img class="col-span-2 sm:col-span-2 sm:row-span-3 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about2.png" alt="Team standup">
+
+                        <!-- Wide image -->
+                        <img class="col-span-2 sm:col-span-3 sm:row-span-2 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about3.png" alt="Pairing">
+
+                        <!-- Small square -->
+                        <img class="col-span-2 sm:col-span-2 sm:row-span-2 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about4.png" alt="Demo day">
+
+                        <!-- Medium vertical -->
+                        <img class="col-span-2 sm:col-span-1 sm:row-span-2 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about6.png" alt="Brainstorming">
+
+                        <!-- Small horizontal -->
+                        <img class="col-span-2 sm:col-span-3 sm:row-span-1 w-full h-full object-cover rounded-2xl"
+                            src="assets/img/about5.png" alt="Product showcase">
+                    </div>
+                    <div
+                        class="absolute inset-0 pointer-events-none bg-gradient-to-tr from-[#4C2A59]/20 to-[#9E4B8A]/10">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================= Paper X • Feature Illustrations Section ================= -->
+    <section class="py-20">
+        <div class="container max-w-6xl">
+            <!-- Section heading -->
+            <header class="text-center mb-14">
+                <h2 class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">
+                    Learn faster, build together, get verified — the Paper X way
+                </h2>
+                <p class="mt-4 text-neutral-600 dark:text-white/70 max-w-3xl mx-auto">
+                    Three pillars that power your academic journey with AI precision and a collaborative heartbeat.
+                </p>
+            </header>
+
+            <!-- Block 1: Notes (text left, image right) -->
+            <div class="grid lg:grid-cols-2 gap-10 items-center mb-16">
+                <div>
+                    <h3 class="text-2xl md:text-3xl font-extrabold tracking-tight">
+                        AI-Powered Notes Generator
+                    </h3>
+                    <p class="mt-3 text-neutral-600 dark:text-white/70">
+                        Turn syllabi into structured, citation-aware notes with KaTeX math and export to Markdown/PDF —
+                        all in real time.
+                    </p>
+                </div>
+                <div class="justify-self-end w-full">
+                    <div
+                        class="rounded-3xl overflow-hidden bg-white/80 dark:bg-white/5 ring-1 ring-black/5 dark:ring-white/10 shadow-soft dark:shadow-glow aspect-[16/9] md:aspect-[21/10] max-w-xl md:max-w-lg ml-auto">
+                        <video class="w-full h-full object-cover" autoplay muted loop playsinline>
+                            <source src="assets/video/abt1.mp4" type="video/mp4" />
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Block 2: Projects (image left, text right) -->
+            <div class="grid lg:grid-cols-2 gap-10 items-center mb-16">
+                <div class="order-last lg:order-first justify-self-start w-full">
+                    <div
+                        class="rounded-3xl overflow-hidden bg-white/80 dark:bg-white/5 ring-1 ring-black/5 dark:ring-white/10 shadow-soft dark:shadow-glow aspect-[16/9] md:aspect-[21/10] max-w-xl md:max-w-lg mr-auto">
+                        <video class="w-full h-full object-cover" autoplay muted loop playsinline>
+                            <source src="assets/video/abt2.mp4" type="video/mp4" />
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                </div>
+                <div class="order-first lg:order-last">
+                    <h3 class="text-2xl md:text-3xl font-extrabold tracking-tight">
+                        Project Collaboration Hub
+                    </h3>
+                    <p class="mt-3 text-neutral-600 dark:text-white/70">
+                        Rich project boards, milestone tracking, smart team matching, messaging, and assets —
+                        collaborate like a pro.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Block 3: Skill Verification (text left, image right) -->
+            <div class="grid lg:grid-cols-2 gap-10 items-center">
+                <div>
+                    <h3 class="text-2xl md:text-3xl font-extrabold tracking-tight">
+                        Skill Verification & Adaptive Testing
+                    </h3>
+                    <p class="mt-3 text-neutral-600 dark:text-white/70">
+                        Adaptive MCQs, coding challenges, and instant scoring — earn verified badges that live on your
+                        profile.
+                    </p>
+                </div>
+                <div class="justify-self-end w-full">
+                    <div
+                        class="rounded-3xl overflow-hidden bg-white/80 dark:bg-white/5 ring-1 ring-black/5 dark:ring-white/10 shadow-soft dark:shadow-glow aspect-[16/9] md:aspect-[21/10] max-w-xl md:max-w-lg ml-auto">
+                        <video class="w-full h-full object-cover" autoplay muted loop playsinline>
+                            <source src="assets/video/abt3.mp4" type="video/mp4" />
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    <!-- ======================================================================== -->
+
+
+    <!-- Mission • Vision • Values (Journey Together headline) -->
+    <section id="journey" class="py-16 md:py-20 border-y border-black/5 dark:border-white/10">
+        <div class="container max-w-6xl">
+            <header class="text-center mb-12">
+                <h2 class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">Journey
+                    Together</h2>
+                <p class="mt-3 text-neutral-600 dark:text-white/70">Our mission, vision, and values align around student
+                    success.</p>
+            </header>
+            <div class="grid md:grid-cols-3 gap-6">
+                <article
+                    class="rounded-2xl p-6 ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition">
+                    <div
+                        class="size-10 grid place-content-center rounded-xl bg-brand-500/15 text-brand-500 dark:text-brand-400 mb-4">
+                        <span class="material-symbols-rounded">flag</span>
+                    </div>
+                    <h3 class="font-semibold text-neutral-900 dark:text-white">Mission</h3>
+                    <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">Make exam-ready learning simple,
+                        structured, and accessible for every Indian student.</p>
+                </article>
+                <article
+                    class="rounded-2xl p-6 ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition">
+                    <div
+                        class="size-10 grid place-content-center rounded-xl bg-brand-500/15 text-brand-500 dark:text-brand-400 mb-4">
+                        <span class="material-symbols-rounded">visibility</span>
+                    </div>
+                    <h3 class="font-semibold text-neutral-900 dark:text-white">Vision</h3>
+                    <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">From syllabus to mastery — one platform
+                        that adapts to you.</p>
+                </article>
+                <article
+                    class="rounded-2xl p-6 ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition">
+                    <div
+                        class="size-10 grid place-content-center rounded-xl bg-brand-500/15 text-brand-500 dark:text-brand-400 mb-4">
+                        <span class="material-symbols-rounded">verified</span>
+                    </div>
+                    <h3 class="font-semibold text-neutral-900 dark:text-white">Values</h3>
+                    <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">Trust, clarity, inclusion, and
+                        relentless improvement.</p>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================= Team Spotlight (Brains behind our success team) ================ -->
+    <section class="py-16 md:py-6">
+        <div class="container max-w-7xl">
+            <div class="grid lg:grid-cols-[0.95fr_1.05fr] gap-10 items-start">
+                <!-- Left copy + arrows -->
+                <div>
+                    <h2 class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">
+                        Brains behind our Pa[p]er X
+                    </h2>
+                    <!-- <p class="mt-4 text-neutral-600 dark:text-white/70 max-w-md">
+                        These people work on making our product best.
+                    </p> -->
+                </div>
+
+                <!-- Cards row -->
+                <div class="relative">
+                    <!-- Horizontal scroller on mobile; grid on md+ -->
+                    <div id="teamScroller"
+                        class="flex gap-6 overflow-x-auto snap-x snap-mandatory pb-2 -mb-2 md:grid md:grid-cols-2 md:gap-8 md:overflow-visible md:snap-none">
+                        <!-- Card 1 with hover overlay -->
+                        <article
+                            class="group min-w-[85%] snap-start md:min-w-0 rounded-3xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/80 dark:bg-brand-900/40 backdrop-blur relative">
+                            <img src="assets/img/about pic/kad-pic.png" alt="Kadhirvel M"
+                                class="aspect-square w-full object-cover object-top md:aspect-[25/24] transition duration-300 group-hover:opacity-35" />
+                            <div
+                                class="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300">
+                                <div class="flex items-center gap-4">
+                                    <a href="https://www.linkedin.com/in/kadhirvel-m/" target="_blank" rel="noopener"
+                                        aria-label="LinkedIn"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">work</span>
+                                    </a>
+                                    <a href="https://github.com/kadhirvel-m" target="_blank" rel="noopener"
+                                        aria-label="GitHub"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">code</span>
+                                    </a>
+                                    <a href="mailto:kadhirvel.ai@gmail.com" aria-label="Email"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">mail</span>
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="p-5 relative z-10">
+                                <h3 class="text-lg font-bold text-neutral-900 dark:text-white">Kadhirvel M</h3>
+                                <p class="mt-1 text-sm text-neutral-700 dark:text-neutral-300">Chief Director</p>
+                            </div>
+                        </article>
+
+                        <!-- Card 2 with hover overlay -->
+                        <article
+                            class="group min-w-[85%] snap-start md:min-w-0 rounded-3xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/80 dark:bg-brand-900/40 backdrop-blur relative">
+                            <img src="assets/img/about pic/danu-pic.png" alt="Danushiyaa M"
+                                class="aspect-square w-full object-cover object-top md:aspect-[25/24] transition duration-300 group-hover:opacity-35" />
+                            <div
+                                class="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300">
+                                <div class="flex items-center gap-4">
+                                    <a href="https://www.linkedin.com/in/danushiyaa22/" target="_blank" rel="noopener"
+                                        aria-label="LinkedIn"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">work</span>
+                                    </a>
+                                    <a href="https://github.com/22danu" target="_blank" rel="noopener"
+                                        aria-label="GitHub"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">code</span>
+                                    </a>
+                                    <a href="mailto:22danu@gmail.com" aria-label="Email"
+                                        class="pointer-events-auto inline-flex items-center justify-center size-11 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur ring-1 ring-black/10 dark:ring-white/20 hover:scale-110 hover:bg-white dark:hover:bg-white/20 transition">
+                                        <span
+                                            class="material-symbols-rounded text-[22px] text-brand-700 dark:text-white">mail</span>
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="p-5 relative z-10">
+                                <h3 class="text-lg font-bold text-neutral-900 dark:text-white">Danushiyaa M</h3>
+                                <p class="mt-1 text-sm text-neutral-700 dark:text-neutral-300">Chief Dreamer</p>
+                            </div>
+                        </article>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tiny JS to make arrows scroll the row on mobile -->
+    <script>
+        (function () {
+            const scroller = document.getElementById('teamScroller');
+            const prev = document.getElementById('teamPrev');
+            const next = document.getElementById('teamNext');
+            if (!scroller || !prev || !next) return;
+
+            const step = () => Math.min(scroller.clientWidth * 0.9, 420); // smooth step
+            prev.addEventListener('click', () => scroller.scrollBy({ left: -step(), behavior: 'smooth' }));
+            next.addEventListener('click', () => scroller.scrollBy({ left: step(), behavior: 'smooth' }));
+        })();
+    </script>
+    <!-- ================================================================================ -->
+
+
+    <!-- Values grid with IMAGES/SVGs -->
+    <section id="values" class="py-20">
+        <div class="container max-w-7xl">
+            <header class="text-center mb-12">
+                <h2 class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">What we
+                    stand for</h2>
+                <p class="mt-3 text-neutral-600 dark:text-white/70">Five principles guide how we build and how we learn.
+                </p>
+            </header>
+
+            <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                <!-- Unity → Team photo (card uses a single wide image) -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/1.png" alt="Unity team photo">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Unity</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">We ship as one team — learners,
+                            designers, engineers, mentors.</p>
+                    </div>
+                </article>
+
+                <!-- Journey Together → Mission/path visual -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/5.png" alt="Journey Together">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Journey Together</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">Clear path, shared milestones,
+                            steady
+                            support.</p>
+                    </div>
+                </article>
+
+                <!-- Diversity & Inclusion → Inclusive circle -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/4.png"
+                        alt="Diversity & Inclusion">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Diversity & Inclusion</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">Everyone belongs. We design for
+                            different languages, levels, and needs.</p>
+                    </div>
+                </article>
+
+                <!-- Innovation Spirit → Lightbulb/ideas -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/3.png" alt="Innovation Spirit">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Innovation Spirit</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">We experiment, validate, and iterate
+                            —
+                            fast.</p>
+                    </div>
+                </article>
+
+                <!-- Growth & Learning → Climbing books with support -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/2.png" alt="Growth & Learning">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Growth & Learning</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">We climb together — with mentorship,
+                            feedback, and steady steps.</p>
+                    </div>
+                </article>
+
+                <!-- Collaboration & Trust -->
+                <article
+                    class="rounded-2xl overflow-hidden ring-1 ring-black/5 dark:ring-white/10 bg-white/70 dark:bg-white/5 hover:shadow-glow transition flex flex-col">
+                    <img class="aspect-[16/9] object-cover" src="assets/img/about pic/6.png"
+                        alt="Collaboration & Trust">
+                    <div class="p-6">
+                        <h3 class="font-semibold text-neutral-900 dark:text-white">Collaboration & Trust</h3>
+                        <p class="mt-1 text-sm text-neutral-600 dark:text-white/70">Every idea matters, every voice
+                            counts, every success is shared.</p>
+                    </div>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- Timelinecomponent -->
+    <section>
+        <div class="py-8 bg-white/70 dark:bg-brand-900/70 text-neutral-900 dark:text-white transition-colors">
+            <div class="container mx-auto flex flex-col items-start md:flex-row my-12 md:my-24">
+                <div class="flex flex-col w-full sticky md:top-36 lg:w-1/3 mt-2 md:mt-12 px-8">
+
+                    <p class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">
+                        Working Process of Pa[p]er X
+                    </p>
+                    <p class="text-sm md:text-base text-neutral-600 dark:text-white/70 mb-4">
+                        Here’s your guide to how PaperX transforms your academic journey. Follow the steps below to know
+                        exactly how it works.
+                    </p>
+                    <a href="#"
+                        class="bg-transparent mr-auto text-brand-500 hover:text-white rounded shadow hover:shadow-glow py-2 px-4 border border-brand-500 hover:bg-brand-500 hover:border-brand-500 transition">
+                        Explore Now</a>
+                </div>
+                <div class="ml-0 md:ml-12 lg:w-2/3 sticky">
+                    <div class="container mx-auto w-full h-full">
+                        <div class="relative wrap overflow-visible p-10 h-full min-h-[800px]">
+                            <!-- SVG Curved Path - Exact replica from image -->
+                            <svg class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 0;"
+                                preserveAspectRatio="none" viewBox="0 0 600 800">
+                                <defs>
+                                    <linearGradient id="roadmapGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                        <stop offset="0%" style="stop-color:#D946EF;stop-opacity:1" />
+                                        <stop offset="50%" style="stop-color:#C026D3;stop-opacity:1" />
+                                        <stop offset="100%" style="stop-color:#A21CAF;stop-opacity:1" />
+                                    </linearGradient>
+
+                                    <!-- Glow filter -->
+                                    <filter id="glow">
+                                        <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+                                        <feMerge>
+                                            <feMergeNode in="coloredBlur" />
+                                            <feMergeNode in="SourceGraphic" />
+                                        </feMerge>
+                                    </filter>
+                                </defs>
+
+                                <!-- Main curved path - S-curve like in the image -->
+                                <path d="M 300 80 
+                                         C 450 150, 450 200, 300 280
+                                         C 150 360, 150 450, 300 530
+                                         C 450 610, 380 680, 300 720" stroke="url(#roadmapGradient)" stroke-width="5"
+                                    fill="none" stroke-linecap="round" filter="url(#glow)" />
+
+                                <!-- Node circles on the path -->
+                                <circle cx="300" cy="80" r="12" fill="#D946EF" stroke="#1E1E2F" stroke-width="3" />
+                                <circle cx="300" cy="280" r="12" fill="#C026D3" stroke="#1E1E2F" stroke-width="3" />
+                                <circle cx="300" cy="530" r="12" fill="#D946EF" stroke="#1E1E2F" stroke-width="3" />
+                            </svg>
+
+                            <!-- Timeline nodes with exact positioning -->
+                            <div class="mb-16 flex justify-between flex-row-reverse items-start w-full relative"
+                                style="z-index: 1; margin-top: 40px;">
+                                <div class="order-1 w-5/12"></div>
+                                <div class="order-1 w-5/12 px-4 py-4 text-left">
+                                    <p class="mb-2 text-sm text-neutral-400 dark:text-neutral-400">Dec, 2024</p>
+                                    <h4 class="mb-2 font-bold text-2xl md:text-3xl text-white">The Spark</h4>
+                                    <p
+                                        class="text-sm md:text-base leading-relaxed text-neutral-300 dark:text-neutral-300">
+                                        Our idea was born — to make studying simpler with AI.. :)
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="mb-16 flex justify-between items-start w-full relative"
+                                style="z-index: 1; margin-top: 120px;">
+                                <div class="order-1 w-5/12"></div>
+                                <div class="order-1 w-5/12 px-4 py-4 text-right">
+                                    <p class="mb-2 text-sm text-neutral-400 dark:text-neutral-400">Jun, 2025</p>
+                                    <h4 class="mb-2 font-bold text-2xl md:text-3xl text-white">Our First Prototype</h4>
+                                    <p
+                                        class="text-sm md:text-base leading-relaxed text-neutral-300 dark:text-neutral-300">
+                                        We built the very first version of PaperX with syllabus parsing and auto-notes.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="mb-16 flex justify-between flex-row-reverse items-start w-full relative"
+                                style="z-index: 1; margin-top: 120px;">
+                                <div class="order-1 w-5/12"></div>
+                                <div class="order-1 w-5/12 px-4 py-4 text-left">
+                                    <p class="mb-2 text-sm text-neutral-400 dark:text-neutral-400">Sept, 2025</p>
+                                    <h4 class="mb-2 font-bold text-2xl md:text-3xl text-white">Early Testing</h4>
+                                    <p
+                                        class="text-sm md:text-base leading-relaxed text-neutral-300 dark:text-neutral-300">
+                                        Students and faculty tried it out, giving us real feedback to improve.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <img class="mx-auto -mt-36 md:-mt-36" src="assets/img/rocket.png" />
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Timeline: Our Journey - Isometric Journey Map Style -->
+    <section
+        class="py-20 border-y border-black/5 dark:border:white/10 bg-gradient-to-br from-brandlt-50/50 to-brand-50/30 dark:from-brand-900/20 dark:to-brand-900/10">
+        <div class="container max-w-7xl">
+            <header class="text-center mb-16">
+                <h2 class="text-4xl md:text-4xl font-extrabold tracking-tight leading-[1.08] gradient-hero-text">Our
+                    Journey</h2>
+                <p class="mt-3 text-neutral-600 dark:text-white/70">Milestones that shaped Paper X.</p>
+            </header>
+
+            <div class="relative min-h-[600px] md:min-h-[500px]">
+                <!-- Journey Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8 md:gap-12 relative z-10">
+
+                    <!-- Card 1: Idea & Prototype -->
+                    <div class="group relative">
+                        <!-- Isometric platform effect -->
+                        <div class="relative">
+                            <!-- 3D Shadow base -->
+                            <div
+                                class="absolute inset-0 bg-brand-200/40 dark:bg-brand-700/30 rounded-2xl transform translate-y-2 translate-x-2 blur-sm">
+                            </div>
+
+                            <!-- Main card -->
+                            <div
+                                class="relative overflow-hidden bg-gradient-to-br from-brand-50 via-brandlt-100 to-brand-200/80 dark:from-brand-900/80 dark:to-brand-800/60 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+                                <!-- Icon/Badge -->
+                                <div
+                                    class="mb-4 inline-flex items-center justify-center w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-lg transform -rotate-6 group-hover:rotate-0 transition-transform">
+                                    <span class="material-symbols-rounded text-white text-2xl">lightbulb</span>
+                                </div>
+
+                                <!-- Year badge -->
+                                <div
+                                    class="inline-block mb-3 px-3 py-1 rounded-full bg-brand-500/25 dark:bg-brand-400/20">
+                                    <span class="text-xs font-bold text-brand-800 dark:text-brand-300">2024</span>
+                                </div>
+
+                                <!-- Content -->
+                                <h3 class="text-xl font-bold mb-2 text-neutral-900 dark:text-white">Idea & Prototype
+                                </h3>
+                                <p class="text-sm text-neutral-800 dark:text-neutral-300 leading-relaxed">
+                                    Auto-notes from syllabus PDFs; early flashcards; small pilot with friends.
+                                </p>
+
+                                <!-- Bubble circles -->
+                                <div
+                                    class="absolute top-8 right-6 w-16 h-16 bg-brand-400/40 dark:bg-brand-500/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-8 left-8 w-12 h-12 bg-brandlt-400/45 dark:bg-brand-600/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-16 left-16 w-8 h-8 bg-brand-300/50 dark:bg-brand-500/15 rounded-full">
+                                </div>
+
+                                <!-- Decorative blur glow -->
+                                <div
+                                    class="absolute top-4 -right-8 w-20 h-20 bg-brand-300/40 dark:bg-brand-500/15 rounded-full blur-2xl -z-10">
+                                </div>
+                                <div
+                                    class="absolute bottom-6 -left-8 w-24 h-24 bg-brandlt-300/35 dark:bg-brand-600/15 rounded-full blur-2xl -z-10">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2: Paper X Beta -->
+                    <div class="group relative md:mt-12">
+                        <div class="relative">
+                            <!-- 3D Shadow base -->
+                            <div
+                                class="absolute inset-0 bg-brand-200/40 dark:bg-brand-700/30 rounded-2xl transform translate-y-2 translate-x-2 blur-sm">
+                            </div>
+
+                            <!-- Main card -->
+                            <div
+                                class="relative overflow-hidden bg-gradient-to-br from-brand-50 via-brand-100 to-brandlt-200/80 dark:from-brand-900/80 dark:to-brand-800/60 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+                                <!-- Icon/Badge -->
+                                <div
+                                    class="mb-4 inline-flex items-center justify-center w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-lg transform rotate-6 group-hover:rotate-0 transition-transform">
+                                    <span class="material-symbols-rounded text-white text-2xl">rocket_launch</span>
+                                </div>
+
+                                <!-- Year badge -->
+                                <div
+                                    class="inline-block mb-3 px-3 py-1 rounded-full bg-brand-600/25 dark:bg-brand-500/20">
+                                    <span class="text-xs font-bold text-brand-900 dark:text-brand-300">2025</span>
+                                </div>
+
+                                <!-- Content -->
+                                <h3 class="text-xl font-bold mb-2 text-neutral-900 dark:text-white">Paper X Beta</h3>
+                                <p class="text-sm text-neutral-800 dark:text-neutral-300 leading-relaxed">
+                                    Question banks, PYQ analytics, multilingual summaries, and offline sync.
+                                </p>
+
+                                <!-- Bubble circles -->
+                                <div
+                                    class="absolute top-6 right-8 w-14 h-14 bg-brand-500/45 dark:bg-brand-500/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute top-14 right-16 w-9 h-9 bg-brand-600/40 dark:bg-brand-400/15 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-10 left-6 w-16 h-16 bg-brandlt-500/40 dark:bg-brand-600/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-20 left-12 w-7 h-7 bg-brand-400/45 dark:bg-brand-500/15 rounded-full">
+                                </div>
+
+                                <!-- Decorative blur glow -->
+                                <div
+                                    class="absolute top-6 -right-10 w-24 h-24 bg-brand-400/45 dark:bg-brand-500/15 rounded-full blur-2xl -z-10">
+                                </div>
+                                <div
+                                    class="absolute bottom-4 -left-10 w-20 h-20 bg-brandlt-400/40 dark:bg-brand-600/15 rounded-full blur-2xl -z-10">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 3: Community & Colleges -->
+                    <div class="group relative md:mt-24">
+                        <div class="relative">
+                            <!-- 3D Shadow base -->
+                            <div
+                                class="absolute inset-0 bg-brand-200/40 dark:bg-brand-500/30 rounded-2xl transform translate-y-2 translate-x-2 blur-sm">
+                            </div>
+
+                            <!-- Main card -->
+                            <div
+                                class="relative overflow-hidden bg-gradient-to-br from-brand-50 via-brandlt-100 to-brand-200/80 dark:from-brand-700/80 dark:to-brand-600/60 rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
+                                <!-- Icon/Badge -->
+                                <div
+                                    class="mb-4 inline-flex items-center justify-center w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-lg transform -rotate-3 group-hover:rotate-0 transition-transform">
+                                    <span class="material-symbols-rounded text-white text-2xl">groups</span>
+                                </div>
+
+                                <!-- Year badge -->
+                                <div
+                                    class="inline-block mb-3 px-3 py-1 rounded-full bg-brand-500/25 dark:bg-brand-400/20">
+                                    <span class="text-xs font-bold text-brand-800 dark:text-brand-300">Next</span>
+                                </div>
+
+                                <!-- Content -->
+                                <h3 class="text-xl font-bold mb-2 text-neutral-900 dark:text-white">Community & Colleges
+                                </h3>
+                                <p class="text-sm text-neutral-800 dark:text-neutral-300 leading-relaxed">
+                                    Faculty portals, peer notes, and campus partnerships across India.
+                                </p>
+
+                                <!-- Bubble circles -->
+                                <div
+                                    class="absolute top-10 right-10 w-12 h-12 bg-brand-400/45 dark:bg-brand-500/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute top-18 right-20 w-8 h-8 bg-brand-500/40 dark:bg-brand-400/15 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-12 left-10 w-14 h-14 bg-brandlt-400/45 dark:bg-brand-600/20 rounded-full">
+                                </div>
+                                <div
+                                    class="absolute bottom-20 left-20 w-10 h-10 bg-brand-300/50 dark:bg-brand-500/15 rounded-full">
+                                </div>
+
+                                <!-- Decorative blur glow -->
+                                <div
+                                    class="absolute top-4 -right-8 w-20 h-20 bg-brand-400/40 dark:bg-brand-500/15 rounded-full blur-2xl -z-10">
+                                </div>
+                                <div
+                                    class="absolute bottom-6 -left-8 w-24 h-24 bg-brandlt-300/35 dark:bg-brand-600/15 rounded-full blur-2xl -z-10">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="relative py-16 md:py-20">
+        <div aria-hidden="true" class="pointer-events-none absolute inset-0">
+            <div
+                class="absolute -top-32 -left-20 w-[520px] h-[520px] rounded-full bg-[radial-gradient(circle_at_center,rgba(158,75,138,0.35),transparent_70%)] blur-3xl">
+            </div>
+            <div
+                class="absolute -bottom-40 -right-10 w-[460px] h-[460px] rounded-full bg-[radial-gradient(circle_at_center,rgba(76,42,89,0.55),transparent_70%)] blur-3xl">
+            </div>
+        </div>
+        <div class="container relative max-w-5xl text-center">
+            <h3 class="text-2xl md:text-3xl font-extrabold tracking-tight">Believe what we believe?</h3>
+            <p class="mt-3 text-neutral-600 dark:text:white/70">Join us as a campus ambassador, mentor, or contributor.
+            </p>
+            <div class="mt-6 flex items-center justify-center gap-3">
+                <a href="#"
+                    class="inline-flex items-center justify-center rounded-full px-6 py-3 text-sm font-semibold text-white bg-gradient-to-r from-[#9E4B8A] via-[#B06AB3] to-[#FF7FD1] shadow-[0_4px_18px_-4px_rgba(158,75,138,0.6)] hover:shadow-[0_6px_28px_-6px_rgba(158,75,138,0.8)] transition">
+                    <span class="material-symbols-rounded text-base">diversity_3</span>
+                    ' Become an Ambassador
+                </a>
+                <a href="contact.html"
+                    class="inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold ring-1 ring-black/10 dark:ring-white/15 hover:bg-black/5 dark:hover:bg:white/10">
+                    <span class="material-symbols-rounded text-base">mail</span> Contact us
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- ====== Footer Section Start -->
+    <footer class="app-footer">
+        <div class="app-footer__content">
+            <div class="container py-16 md:py-20">
+                <div class="grid gap-12 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] items-start">
+                    <div class="app-footer__brand space-y-5">
+                        <a href="#" class="inline-flex items-center gap-3">
+                            <img src="assets/img/logo-light.svg" alt="Paper X" class="h-12 w-auto dark:hidden">
+                            <img src="assets/img/logo-dark.svg" alt="Paper X" class="h-12 w-auto hidden dark:block">
+                        </a>
+                        <p class="text-sm leading-relaxed max-w-sm opacity-80">
+                            Exam-ready intelligence for Indian colleges. Capture syllabi, generate smart notes, practice
+                            past papers, and stay ahead with AI-crafted learning paths.
+                        </p>
+                        <div class="app-footer__social flex items-center gap-3">
+                            <a href="#" aria-label="Follow Paper X on X">
+                                <span class="material-symbols-rounded text-base">alternate_email</span>
+                            </a>
+                            <a href="#" aria-label="Connect on LinkedIn">
+                                <span class="material-symbols-rounded text-base">work</span>
+                            </a>
+                            <a href="#" aria-label="Watch our launches on YouTube">
+                                <span class="material-symbols-rounded text-base">play_arrow</span>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 class="text-xs font-semibold tracking-[0.32em] uppercase opacity-70">Product</h4>
+                        <ul class="app-footer__list mt-5 text-sm">
+                            <li><a href="#features">Feature overview</a></li>
+                            <li><a href="#how-it-works">Workflow</a></li>
+                            <li><a href="#pricing">Pricing & plans</a></li>
+                            <li><a href="#" role="button">Developer API</a></li>
+                            <li><a href="#" role="button">Status</a></li>
+                        </ul>
+                    </div>
+
+                    <div>
+                        <h4 class="text-xs font-semibold tracking-[0.32em] uppercase opacity-70">Stay in the loop</h4>
+                        <p class="mt-5 text-sm opacity-80 max-w-xs">
+                            Join 10k+ students receiving power tips, question banks, and exam strategies every Friday.
+                        </p>
+                        <form class="app-footer__newsletter flex flex-col sm:flex-row gap-3 mt-6" action="#"
+                            method="post" novalidate>
+                            <div class="relative flex-1 min-w-0">
+                                <span class="material-symbols-rounded app-footer__newsletter-icon">mail</span>
+                                <input type="email" name="email" placeholder="you@example.com"
+                                    aria-label="Email address">
+                            </div>
+                            <button type="submit" class="app-footer__cta-btn">
+                                <span class="material-symbols-rounded text-base">bolt</span>
+                                Notify me
+                            </button>
+                        </form>
+                        <p class="mt-3 text-xs opacity-70">No spam. Opt out anytime.</p>
+                    </div>
+                </div>
+
+                <div
+                    class="app-footer__divider flex flex-col gap-4 md:flex-row md:items-center md:justify-between text-xs md:text-sm">
+                    <p>© <span id="y"></span> Paper X. Crafted with care across India.</p>
+                    <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+                        <a href="#">Privacy</a>
+                        <a href="#">Terms</a>
+                        <a href="#">Responsible AI</a>
+                        <a href="#">Contact</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <!-- ====== Footer Section End -->
+
+    <!-- Scripts: year + theme toggle (same behavior as index) -->
+    <script>
+        const y = document.getElementById('y'); if (y) y.textContent = new Date().getFullYear();
+        const root = document.documentElement;
+        const toggles = () => Array.from(document.querySelectorAll('[data-theme-toggle]'));
+        const setIcon = (mode) => toggles().forEach(b => { const i = b.querySelector('.material-symbols-rounded'); if (i) i.textContent = mode === 'dark' ? 'light_mode' : 'dark_mode'; });
+        const setTheme = (m) => { m === 'dark' ? root.classList.add('dark') : root.classList.remove('dark'); localStorage.setItem('px_theme', m); setIcon(m); };
+        setTheme(root.classList.contains('dark') ? 'dark' : 'light');
+        document.addEventListener('click', e => { const t = e.target.closest('[data-theme-toggle]'); if (!t) return; setTheme(root.classList.contains('dark') ? 'light' : 'dark'); });
+    </script>
+    <script>
+        (function () {
+            const toggle = document.getElementById('mobileNavToggle');
+            const panel = document.getElementById('mobileNavPanel');
+            const backdrop = document.getElementById('mobileNavBackdrop');
+            if (!toggle || !panel || !backdrop) return;
+            const icon = toggle.querySelector('[data-icon]');
+
+            const open = () => {
+                panel.classList.remove('hidden');
+                backdrop.classList.remove('hidden');
+                panel.setAttribute('data-open', 'true');
+                panel.classList.add('open');
+                panel.setAttribute('aria-hidden', 'false');
+                backdrop.setAttribute('data-open', 'true');
+                backdrop.classList.add('open');
+                backdrop.setAttribute('aria-hidden', 'false');
+                toggle.setAttribute('aria-expanded', 'true');
+                if (icon) icon.textContent = 'close';
+                document.body.classList.add('overflow-hidden');
+            };
+            const close = () => {
+                panel.removeAttribute('data-open');
+                panel.classList.remove('open');
+                panel.setAttribute('aria-hidden', 'true');
+                backdrop.removeAttribute('data-open');
+                backdrop.classList.remove('open');
+                backdrop.setAttribute('aria-hidden', 'true');
+                toggle.setAttribute('aria-expanded', 'false');
+                if (icon) icon.textContent = 'menu';
+                document.body.classList.remove('overflow-hidden');
+                panel.classList.add('hidden');
+                backdrop.classList.add('hidden');
+            };
+            toggle.addEventListener('click', () => toggle.getAttribute('aria-expanded') === 'true' ? close() : open());
+            backdrop.addEventListener('click', close);
+            window.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+            window.matchMedia('(min-width: 768px)').addEventListener('change', e => { if (e.matches) close(); });
+            panel.addEventListener('click', evt => { if (evt.target.closest('[data-close-mobile-nav]')) close(); });
+            // Ensure closed state on initial load
+            close();
+        })();
+    </script>
+</body>
+<!-- Auth dynamic navbar script -->
+<script src="auth.js"></script>
+
+</html>
