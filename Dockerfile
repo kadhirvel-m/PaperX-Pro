@@ -50,7 +50,7 @@ COPY main.py ./
 COPY db.sql ./
 COPY packages ./packages
 COPY config ./config
-COPY learning_tracks ./learning_tracks
+
 
 # Ensure writable storage dirs before switching to non-root user
 RUN mkdir -p assets/notes_marketplace notes && \
