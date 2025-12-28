@@ -45,6 +45,13 @@ This guide explains how to deploy the PaperX application to DigitalOcean App Pla
 17. Click **Save**.
 18. Click **Next**.
 
+> [!WARNING]
+> If you encounter an error about "deploying action __pycache__", it means DigitalOcean is trying to deploy your cache files. 
+> 1. Ensure you have added the `.dockerignore` file included in this update.
+> 2. Run `git rm -r --cached .` and `git add .` then commit to clean up your git index if `__pycache__` was accidentally committed.
+> 3. Push the changes to GitHub.
+
+
 ### Review and Deploy
 
 19. Select your **Region** (e.g., Bangalore, Singapore, New York).
