@@ -1,0 +1,35 @@
+# Exclude local dev artifacts from Render build context
+
+# Python caches
+
+**pycache**/
+_.py[cod]
+_.pyo
+\*.pyd
+
+# Virtual environments
+
+venv/
+.env
+
+# Local notes if you persist them elsewhere; Render will mount a disk anyway
+
+notes/
+
+# Logs & temp
+
+\*.log
+logs/
+tmp/
+.cache/
+
+# Node / frontend caches (if later added)
+
+node_modules/
+.dist/
+
+# Git & misc
+
+.git/
+.gitignore
+README_drafts/

@@ -1,0 +1,79 @@
+# Render Infrastructure as Code spec
+# Docs: https://render.com/docs/infrastructure-as-code
+
+services:
+  - type: web
+    name: paperx-api
+    env: docker # We'll use the Dockerfile in repo
+    plan: starter # Adjust (starter, standard, pro). Starter good for PoC
+    region: oregon # or frankfurt, singapore etc. Choose nearest
+    autoDeploy: true
+    branch: main # Change if deploying another branch
+    healthCheckPath: /health # Lightweight health endpoint
+    # If you prefer native runtime (without Dockerfile) set env: python and provide build/start below.
+
+    buildCommand: |
+      echo "Build handled by Dockerfile (multi-stage)"
+    startCommand: |
+      ./start.sh  # Provided by Dockerfile (wrapper launching uvicorn)
+
+    envVars:
+      # === Supabase ===
+      - key: SUPABASE_URL
+        value: "https://your-project.supabase.co"
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # Set in dashboard or via render secrets sync
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: "project-assets"
+
+      # === AI / Model Providers ===
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_BASE_URL
+        value: "https://generativelanguage.googleapis.com/v1beta/openai/"
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+
+      # === Search / External APIs ===
+      - key: SERPAPI_API_KEY
+        sync: false
+
+      # === Optional table overrides (defaults exist) ===
+      - key: PROJECTS_TABLE
+        value: projects
+      - key: PROJECT_APPLICATIONS_TABLE
+        value: project_applications
+
+      # === App runtime ===
+      - key: PORT
+        value: 10000 # Render injects PORT, but we also read .env; uvicorn will bind 0.0.0.0:$PORT
+      - key: UVICORN_WORKERS
+        value: 1
+      - key: FORCE_SINGLE_WORKER
+        value: "true"
+      - key: UVICORN_LOG_LEVEL
+        value: info
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: LOG_LEVEL
+        value: info
+
+    disks:
+      - name: notes-data
+        mountPath: /app/notes
+        sizeGB: 1 # Notes markdown + generated artifacts
+
+# (Optional) cron jobs example
+# cronJobs:
+#   - name: prune-old-temp-files
+#     schedule: "0 3 * * *"  # every day 03:00 UTC
+#     env: docker
+#     plan: starter
+#     buildCommand: echo "Cron build handled by Dockerfile"
+#     startCommand: python scripts/cleanup_temp.py
