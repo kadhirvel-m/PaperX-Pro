@@ -1,2 +1,30 @@
-/.env
-/__pycache__
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python cache - important: prevents DO Functions misdetection
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# SQL scripts in packages (not needed at runtime)
+packages/sql/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Virtual environments
+venv/
+.venv/
+env/
