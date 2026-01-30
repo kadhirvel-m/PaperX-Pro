@@ -17192,7 +17192,7 @@ def create_app() -> FastAPI:
     app.include_router(youtube_transcript_router)
     app.include_router(youtube_search_router)
     app.include_router(yt_transcript_router, prefix="/api/youtube", tags=["youtube transcripts (raw)"])
-    app.include_router(tunex_router.router)
+    # tunex_router removed - was from packages that are now inlined
 
     # Simple request logger to aid debugging 405/OPTIONS/CORS issues
     @app.middleware("http")
