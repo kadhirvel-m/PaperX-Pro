@@ -17874,7 +17874,7 @@ def delete_lcoding_topic(topic_id: str):
     return {"message": "Topic deleted successfully"}
 
 app.include_router(lcoding_router)
-app.include_router(problems_api.router) # Problem Solver Routes
+# problems_api.router removed - was from packages that are now inlined
 
 if __name__ == "__main__":
     import uvicorn
@@ -17884,8 +17884,13 @@ if __name__ == "__main__":
 # ... (existing code)
 
 # --- Python Compiler Endpoint ---
-from packages.python_compiler import execute_python_code
-from packages.java_compiler import execute_java_code
+# Package imports removed for deployment compatibility
+# Placeholder functions for compiler endpoints
+def execute_python_code(code: str) -> dict:
+    return {"error": "Python compiler not available in this deployment"}
+
+def execute_java_code(code: str) -> dict:
+    return {"error": "Java compiler not available in this deployment"}
 
 class CompilerRequest(BaseModel):
     code: str
