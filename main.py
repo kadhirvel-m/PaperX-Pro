@@ -17249,14 +17249,10 @@ def delete_lcoding_topic(topic_id: str):
     return {"message": "Topic deleted successfully"}
 
 app.include_router(lcoding_router)
-app.include_router(problems_api.router) # Problem Solver Routes
+app.include_router(problems_api.router)  # Problem Solver Routes
+app.include_router(tunex_router.router)  # Tunex Routes (topics, AI generation)
+app.include_router(yt_transcript_router)  # YouTube Transcript Routes
 
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
-# ... (existing code)
 
 # --- Python Compiler Endpoint ---
 from packages.python_compiler import execute_python_code
