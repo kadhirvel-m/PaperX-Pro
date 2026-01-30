@@ -1,0 +1,3 @@
+# packages/__init__.py
+# This file makes the 'packages' directory a Python package,
+# allowing imports like: from packages.module import ...
