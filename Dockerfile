@@ -50,6 +50,7 @@ COPY main.py ./
 COPY db.sql ./
 COPY packages ./packages
 COPY config ./config
+COPY ui ./ui
 
 
 # Ensure writable storage dirs before switching to non-root user
