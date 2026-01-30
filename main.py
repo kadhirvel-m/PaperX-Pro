@@ -93,7 +93,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request as URLRequest, urlopen
 
 try:
     # Used for fetching YouTube video metadata (channel, views, etc.)
