@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Topics | Tunex</title>
+    <link rel="stylesheet" href="../assets/css/tailwind.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <script src="../../assets/js/theme.js"></script>
+    <script>
+        window.tailwind = window.tailwind || {};
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gatex: {
+                            bg: '#13131F',
+                            card: '#1E1E2F',
+                            cardHover: '#27293d',
+                            primary: '#9E4B8A',
+                            secondary: '#4C2A59',
+                            accent: '#FF7F50',
+                            success: '#00F090',
+                            info: '#3B82F6'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-header {
+            background: rgba(19, 19, 31, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+</head>
+
+<body class="bg-gatex-bg text-gray-100 font-sans antialiased" x-data="sectionApp()">
+
+    <!-- Header -->
+    <header class="h-16 flex items-center justify-between px-6 sticky top-0 z-30 glass-header">
+        <div class="flex items-center gap-4">
+            <button @click="goBack()" class="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10">
+                <i class="ri-arrow-left-line text-xl"></i>
+            </button>
+            <div class="flex flex-col">
+                <h1 class="text-sm text-gray-400 font-medium" x-text="langName"></h1>
+                <h2 class="text-lg font-bold" x-text="sectionName || 'Loading...'"></h2>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <button @click="Theme.toggle()" class="p-2 text-gray-400 hover:text-white transition">
+                <i class="ri-moon-line dark:hidden"></i>
+                <i class="ri-sun-line hidden dark:block"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="p-6 max-w-5xl mx-auto">
+
+        <!-- Header & Add Button -->
+        <div class="flex justify-between items-center mb-8">
+            <h3 class="text-xl font-bold">Topics</h3>
+            <button @click="showAddModal = true"
+                class="bg-gatex-primary hover:bg-gatex-secondary text-white px-4 py-2 rounded-xl flex items-center gap-2 transition shadow-lg shadow-gatex-primary/20">
+                <i class="ri-add-line"></i> Add Topic
+            </button>
+        </div>
+
+        <!-- Topics List -->
+        <div class="space-y-3">
+            <template x-for="(topic, index) in topics" :key="topic.id">
+                <div @click="goToTopic(topic)"
+                    class="bg-gatex-card border border-white/5 rounded-xl p-4 flex items-center justify-between hover:border-white/10 transition group cursor-pointer hover:bg-gatex-cardHover">
+                    <div class="flex items-start gap-4">
+                        <div class="mt-1 w-6 h-6 rounded-full border border-gatex-primary/30 flex items-center justify-center text-xs text-gatex-primary font-bold"
+                            x-text="index + 1"></div>
+                        <div>
+                            <h4 class="font-bold text-gray-200" x-text="topic.title"></h4>
+                            <div class="flex items-center gap-4 mt-1 text-xs text-gray-500">
+                                <span>Index: <span x-text="topic.order_index"></span></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click.stop="renameTopic(topic)"
+                            class="p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-lg transition"
+                            title="Rename">
+                            <i class="ri-pencil-line"></i>
+                        </button>
+                        <button @click.stop="deleteTopic(topic)"
+                            class="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                            title="Delete">
+                            <i class="ri-delete-bin-line"></i>
+                        </button>
+                        <i class="ri-arrow-right-s-line text-gray-500 group-hover:text-white transition"></i>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Empty State -->
+        <div x-show="topics.length === 0 && !loading"
+            class="text-center py-20 bg-gatex-card/50 rounded-2xl border border-white/5 border-dashed">
+            <i class="ri-list-check text-4xl mb-3 block opacity-30"></i>
+            <p class="text-gray-500">No topics in this section yet.</p>
+        </div>
+
+        <!-- Add Modal -->
+        <div x-show="showAddModal" class="fixed inset-0 z-50 flex items-center justify-center px-4"
+            style="display: none;">
+            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showAddModal = false"></div>
+            <div class="bg-gatex-card border border-white/10 rounded-2xl p-6 w-full max-w-sm relative z-10 shadow-2xl">
+                <h3 class="text-xl font-bold mb-4">Add Topic</h3>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Title</label>
+                        <input type="text" x-model="newTopic.title"
+                            class="w-full bg-gatex-bg border border-white/10 rounded-lg px-4 py-2 focus:border-gatex-primary outline-none transition"
+                            placeholder="Topic Title">
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 mt-6">
+                    <button @click="showAddModal = false"
+                        class="px-4 py-2 rounded-lg hover:bg-white/5 text-sm">Cancel</button>
+                    <button @click="createTopic()"
+                        class="bg-gatex-primary hover:bg-gatex-secondary text-white px-4 py-2 rounded-lg text-sm font-medium transition">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Edit Modal -->
+        <div x-show="showEditModal" class="fixed inset-0 z-50 flex items-center justify-center px-4"
+            style="display: none;">
+            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showEditModal = false"></div>
+            <div class="bg-gatex-card border border-white/10 rounded-2xl p-6 w-full max-w-sm relative z-10 shadow-2xl">
+                <h3 class="text-xl font-bold mb-4">Edit Topic</h3>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-400 mb-1">Title</label>
+                        <input type="text" x-model="editingTopic.title"
+                            class="w-full bg-gatex-bg border border-white/10 rounded-lg px-4 py-2 focus:border-gatex-primary outline-none transition"
+                            placeholder="Topic Title" @keydown.enter="confirmRename()">
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 mt-6">
+                    <button @click="showEditModal = false"
+                        class="px-4 py-2 rounded-lg hover:bg-white/5 text-sm">Cancel</button>
+                    <button @click="confirmRename()"
+                        class="bg-gatex-primary hover:bg-gatex-secondary text-white px-4 py-2 rounded-lg text-sm font-medium transition">Save
+                        Changes</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Delete Modal -->
+        <div x-show="showDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center px-4"
+            style="display: none;">
+            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showDeleteModal = false"></div>
+            <div class="bg-gatex-card border border-white/10 rounded-2xl p-6 w-full max-w-sm relative z-10 shadow-2xl">
+                <i class="ri-error-warning-line text-4xl text-red-500 mb-2 block"></i>
+                <h3 class="text-xl font-bold mb-2">Delete Topic?</h3>
+                <p class="text-gray-400 text-sm mb-6">Are you sure you want to delete "<span
+                        class="text-white font-medium" x-text="deletingTopic?.title"></span>"? This action cannot be
+                    undone.</p>
+
+                <div class="flex justify-end gap-3">
+                    <button @click="showDeleteModal = false"
+                        class="px-4 py-2 rounded-lg hover:bg-white/5 text-sm">Cancel</button>
+                    <button @click="confirmDelete()"
+                        class="bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 px-4 py-2 rounded-lg text-sm font-medium transition">Delete
+                        Forever</button>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const API_BASE = 'http://127.0.0.1:8000';
+
+        function sectionApp() {
+            return {
+                sectionId: null,
+                langName: '',
+                sectionName: '',
+                topics: [],
+                loading: true,
+                showAddModal: false,
+                showEditModal: false,
+                showDeleteModal: false,
+                newTopic: { title: '', order_index: 0 },
+                editingTopic: { id: null, title: '' },
+                deletingTopic: null,
+
+                init() {
+                    const params = new URLSearchParams(window.location.search);
+                    this.sectionId = params.get('id');
+                    this.langName = params.get('langName') || 'Language';
+
+                    if (!this.sectionId) {
+                        alert("No section ID provided");
+                        window.history.back();
+                        return;
+                    }
+                    this.fetchData();
+                },
+
+                goBack() {
+                    window.history.back();
+                },
+
+                goToTopic(topic) {
+                    const params = new URLSearchParams({
+                        id: topic.id,
+                        title: topic.title,
+                        sectionId: this.sectionId,
+                        langName: this.langName
+                    });
+                    window.location.href = `topic.html?${params.toString()}`;
+                },
+
+                async fetchData() {
+                    this.loading = true;
+                    try {
+                        // Fetch section details to get the name
+                        const sectionRes = await fetch(`${API_BASE}/api/lcoding/sections/${this.sectionId}`);
+                        if (sectionRes.ok) {
+                            const sectionData = await sectionRes.json();
+                            this.sectionName = sectionData.title || sectionData.name || 'Section';
+                        }
+
+                        // Fetch topics for this section
+                        const topicRes = await fetch(`${API_BASE}/api/lcoding/sections/${this.sectionId}/topics`);
+                        if (topicRes.ok) this.topics = await topicRes.json();
+
+                        if (this.topics.length > 0) {
+                            const maxOrder = Math.max(...this.topics.map(t => t.order_index));
+                            this.newTopic.order_index = maxOrder + 10;
+                        }
+
+                    } catch (e) {
+                        console.error("Failed to fetch data", e);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async createTopic() {
+                    if (!this.newTopic.title) return alert("Title is required");
+
+                    // Prepare payload - only title and order_index
+                    const payload = {
+                        title: this.newTopic.title,
+                        order_index: this.newTopic.order_index
+                    };
+
+                    try {
+                        const res = await fetch(`${API_BASE}/api/lcoding/sections/${this.sectionId}/topics`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (res.ok) {
+                            this.showAddModal = false;
+                            // Reset title, increment order_index
+                            this.newTopic.title = '';
+                            this.newTopic.order_index += 10;
+                            this.fetchData();
+                        } else {
+                            alert("Failed to create topic");
+                        }
+                    } catch (e) {
+                        console.error("Error creating topic", e);
+                        alert("Error creating topic");
+                    }
+                },
+
+                renameTopic(topic) {
+                    this.editingTopic = { ...topic };
+                    this.showEditModal = true;
+                },
+
+                async confirmRename() {
+                    if (!this.editingTopic.title) return alert("Title is required");
+                    // Optimistic update
+                    const oldTitle = this.topics.find(t => t.id === this.editingTopic.id).title;
+
+                    try {
+                        const res = await fetch(`${API_BASE}/api/lcoding/topics/${this.editingTopic.id}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title: this.editingTopic.title })
+                        });
+
+                        if (res.ok) {
+                            this.showEditModal = false;
+                            this.fetchData();
+                        } else {
+                            alert("Failed to rename topic");
+                        }
+                    } catch (e) {
+                        console.error("Error renaming topic", e);
+                        alert("Error renaming topic");
+                    }
+                },
+
+                deleteTopic(topic) {
+                    this.deletingTopic = topic;
+                    this.showDeleteModal = true;
+                },
+
+                async confirmDelete() {
+                    if (!this.deletingTopic) return;
+
+                    try {
+                        const res = await fetch(`${API_BASE}/api/lcoding/topics/${this.deletingTopic.id}`, {
+                            method: 'DELETE'
+                        });
+
+                        if (res.ok) {
+                            this.showDeleteModal = false;
+                            this.fetchData();
+                        } else {
+                            alert("Failed to delete topic");
+                        }
+                    } catch (e) {
+                        console.error("Error deleting topic", e);
+                        alert("Error deleting topic");
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+
+</html>

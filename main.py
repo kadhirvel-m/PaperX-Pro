@@ -18,7 +18,7 @@ import uuid
 import math
 import ast
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +26,15 @@ from typing import Any, AsyncGenerator, Dict, Iterator, List, Literal, Optional,
 from urllib.parse import quote, urlparse
 import threading
 import concurrent.futures
+
+# New imports for using google.genai as requested
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ModelInfo
@@ -80,6 +89,8 @@ from packages.yt_transcript import (
     fetch_transcript_paragraph,
     extract_video_id,
 )
+from packages import tunex_router
+from packages import problems_api # New Problem Solver API
 from packages.youtube_video import (
     get_channel_logo,
     get_default_channel_logo,
@@ -105,6 +116,25 @@ except Exception:
 
 supabase_logger = logging.getLogger("paperx.supabase")
 supabase_logger.setLevel(logging.INFO)
+
+# Truncate long uvicorn access log messages
+class TruncateLogFilter(logging.Filter):
+    def filter(self, record):
+        if hasattr(record, 'args') and record.args:
+            # Truncate the message if it contains a very long URL
+            args = list(record.args) if isinstance(record.args, tuple) else [record.args]
+            new_args = []
+            for arg in args:
+                if isinstance(arg, str) and len(arg) > 100:
+                    new_args.append(arg[:97] + "...")
+                else:
+                    new_args.append(arg)
+            record.args = tuple(new_args)
+        return True
+
+# Apply filter to uvicorn.access logger
+uvicorn_access_logger = logging.getLogger("uvicorn.access")
+uvicorn_access_logger.addFilter(TruncateLogFilter())
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -1402,55 +1432,29 @@ def assemble_context_for_llm(pages: List[PageExtract], merged_titles: List[str],
     return "\n".join(lines)
 
 
-SYSTEM_INSTRUCTIONS = """You are a senior educational writer building accurate, comprehensive, and exam-ready notes for college students in India.
+SYSTEM_INSTRUCTIONS = """You are a senior educational writer building accurate, well-structured notes for college students in India.
 
 CRITICAL RULES:
-- Use the source excerpts provided as the foundation, but you MAY ALSO ADD your own expert knowledge to make the notes more comprehensive and complete.
+- Use ONLY the source excerpts provided; do not invent facts. If a fact is not supported, mark it as [needs review].
 - Respect section headings actually observed on the referenced pages. You may merge similar headings (e.g., Advantages/Pros).
-- Discuss concepts clearly. For Advantages, Disadvantages, and Applications, keep points concise (1-2 lines).
-- Every section should have substantial content with examples, explanations, and practical insights, except where brevity is requested.
-
-MANDATORY SECTIONS (include ALL that are applicable to the topic):
-1. **TL;DR / Quick Summary** - Concise bullet points for quick revision (Place this FIRST)
-2. **Introduction** - Comprehensive overview of the topic, its importance, and context
-3. **Need / Why It Is Required** - Explain the problem it solves, why it was developed, real-world necessity
-4. **Definition / Concept** - Clear, detailed definition with technical accuracy
-5. **Working Principle / How It Works** - Step-by-step explanation of the mechanism, process, or algorithm
-6. **Components / Parts / Architecture** - Detailed breakdown of constituent parts with their roles
-7. **Types / Classification / Categories** - Different variants, types, or classifications if applicable
-8. **Characteristics / Properties / Features** - Key attributes and distinguishing features
-9. **Formulas / Equations / Mathematical Representation** - Include all relevant formulas with explanations
-10. **Examples / Real-Life Examples / Case Studies** - Multiple practical examples, real-world applications
-11. **Solved Problems / Numerical Examples** - If applicable, include worked-out examples step-by-step
-12. **Advantages / Benefits / Pros** - Brief list, 1-2 lines per point
-13. **Disadvantages / Limitations / Cons** - Brief list, 1-2 lines per point
-14. **Applications / Use Cases** - Brief list, 1-2 lines per point
-15. **Comparison** - Compare with related concepts/technologies if relevant
-16. **Memory Aids / Mnemonics** - Tricks to remember key concepts
-17. **Common Mistakes to Avoid** - Frequent errors students make
-18. **Conclusion** - Summarize key takeaways
-
-NOTE: Include sections only if they are RELEVANT to the topic. For theoretical topics, skip hardware components. For concepts without formulas, skip mathematical sections. Use your judgment.
-
-FORMATTING RULES:
-- Include at least 2-3 Mermaid diagrams when process/relationships/architecture are relevant.
+- You MUST also include these blocks even if not present: Introduction, TL;DR in short simple points, Examples, Conclusion, Memory Aids, Common Mistakes.
+- Keep explanations concise but complete; use bullet points where helpful.
+- Include at least one Mermaid diagram when process/relationships are relevant.
 - Every non-obvious claim MUST carry an inline citation like [GFG], [TP], [Scaler], [Wiki], or [TPT] mapped in the CITATIONS section.
 - Prefer plain text + Mermaid diagrams; do not embed external images.
-- Bold important keywords, symbols, and technical terms using Markdown **double asterisks**. Examples: **epsilon-greedy (ε-greedy)**, **Markov Decision Process (MDP)**, parameters like **θ**, **γ**, **α**, algorithm names like **Q-learning**.
-- Use tables to organize comparative information, specifications, or properties.
-- Use numbered lists for sequential processes and bullet points for unordered information.
+ - Bold important keywords, symbols, and technical terms using Markdown **double asterisks**. Examples: **epsilon-greedy (Îµ-greedy)**, **Markov Decision Process (MDP)**, parameters like **Î¸**, **Î³**, **Î±**, algorithm names like **Q-learning**.
 
 OUTPUT FORMAT (STRICT):
 Return a single Markdown document with:
 1) A title line: '# <Topic>'
-2) For each section, a '## <Section>' block with comprehensive content
+2) For each merged section title (after light normalization), a '## <Section>' block
 3) Use bullet points, short paragraphs, tables when appropriate (GitHub MD)
 4) Mermaid diagram(s) in fenced code blocks: ```mermaid ... ```
 5) A final '## CITATIONS' list mapping labels to URLs with short quoted spans
 
 If sources contradict, mark the line with [conflict] and keep both with citations.
 
-TARGET LENGTH: 800-1000 words for comprehensive coverage. Be thorough and detailed.
+Keep it under ~1200â€“1500 words unless the topic is inherently longer.
 """
 
 
@@ -1521,45 +1525,28 @@ def generate_notes_markdown(topic: str, *, degree: Optional[str] = None) -> str:
     user_prompt = f"""
 You will compose comprehensive, exam-ready Markdown notes for the topic "{topic}".
 
-Context from sources:
+Context:
 {context}
 
-IMPORTANT INSTRUCTIONS:
-1. Create DETAILED, THOROUGH notes - students need complete understanding for exams.
-2. Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
-3. Normalize section titles (e.g., "Applications" vs. "Use Cases" - pick one).
+Instructions:
+- Create DETAILED, THOROUGH notes - students need complete understanding for exams.
+- Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
+- Normalize section titles only lightly (e.g., "Applications" vs. "Use Cases" pick one).
+- Include the compulsory sections even if they were not present in sources.
+- Generate at least one mermaid diagram if suitable (e.g., flow of algorithm, hierarchy, pipeline).
+- Build a final '## CITATIONS' mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to URLs you used.
+- Inline-cite like: "... property ... [GFG]" or "... step ... [Wiki]" after the sentence.
+ - Bold important keywords/terms and symbols (e.g., Î¸, Î³, Î±, Îµ-greedy, key definitions) with **...** consistently; avoid over-bolding.
 
 MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
+- **TL;DR / Quick Summary**: Bullet points for quick revision
 - **Introduction**: Comprehensive overview with context and importance
 - **Need / Why It Is Required**: What problem does it solve? Why was it developed?
-- **Definition / Core Concept**: Clear, precise technical definition
-- **Working Principle / How It Works**: Detailed step-by-step mechanism or process
-- **Components / Architecture / Structure**: Break down into constituent parts with roles
-- **Types / Classification**: Different variants or categories if applicable
-- **Characteristics / Properties**: Key distinguishing features
-- **Formulas / Equations**: All relevant mathematical representations with explanations
-- **Examples / Real-Life Examples**: Multiple practical, relatable examples
-- **Solved Problems**: Worked-out numerical examples if applicable
-- **Advantages**: Comprehensive list with brief explanations
-- **Disadvantages / Limitations**: Honest assessment of drawbacks
-- **Applications**: Real-world use cases across industries
-- **Comparison with Related Concepts**: If relevant, compare with alternatives
-- **TL;DR / Quick Summary**: Bullet points for quick revision
-- **Memory Aids / Mnemonics**: Tricks and tips to remember concepts
-- **Common Mistakes to Avoid**: Frequent student errors
-- **Conclusion**: Key takeaways
+- **Definition / Core Concept**: Clear, precise technical definition of the "{topic}"
 
-FORMATTING REQUIREMENTS:
-- Generate 2-3 Mermaid diagrams for processes, architectures, or relationships
-- Build a final '## CITATIONS' section mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to source URLs
-- Inline citations: "... property ... [GFG]" or "... step ... [Wiki]" after statements
-- Bold important keywords/terms with **...** (e.g., **algorithm name**, **theta**, **gamma**, **alpha**)
-- Use tables for comparisons, specifications, or structured data
-- Use numbered lists for sequential steps, bullet points for features/properties
+TARGET LENGTH: 1000-2000 words for comprehensive exam preparation.
 
-TARGET LENGTH: 2500-4000 words for comprehensive exam preparation.
-
-Start with '# {topic}' and organize sections in a logical educational flow.
+Start with '# {topic}' and then the sections in a logical order.
 """
     # Use safe runner to support both CLI and FastAPI contexts
     result = _run_assistant_blocking(assistant, user_prompt)
@@ -1613,45 +1600,28 @@ Output rules (STRICT):
     return f"""
 You will compose comprehensive, exam-ready Markdown notes for the topic "{topic}".
 
-Context from sources:
+Context:
 {context}
 
-IMPORTANT INSTRUCTIONS:
-1. Create DETAILED, THOROUGH notes - students need complete understanding for exams.
-2. Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
-3. Normalize section titles (e.g., "Applications" vs. "Use Cases" → pick one).
+Instructions:
+- Create DETAILED, THOROUGH notes - students need complete understanding for exams.
+- Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
+- Normalize section titles only lightly (e.g., "Applications" vs. "Use Cases" pick one).
+- Include the compulsory sections even if they were not present in sources.
+- Generate at least one mermaid diagram if suitable (e.g., flow of algorithm, hierarchy, pipeline).
+- Build a final '## CITATIONS' mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to URLs you used.
+- Inline-cite like: "... property ... [GFG]" or "... step ... [Wiki]" after the sentence.
+ - Bold important keywords/terms and symbols (e.g., Î¸, Î³, Î±, Îµ-greedy, key definitions) with **...** consistently; avoid over-bolding.
 
 MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
+- **TL;DR / Quick Summary**: Bullet points for quick revision
 - **Introduction**: Comprehensive overview with context and importance
 - **Need / Why It Is Required**: What problem does it solve? Why was it developed?
-- **Definition / Core Concept**: Clear, precise technical definition
-- **Working Principle / How It Works**: Detailed step-by-step mechanism or process
-- **Components / Architecture / Structure**: Break down into constituent parts with roles
-- **Types / Classification**: Different variants or categories if applicable
-- **Characteristics / Properties**: Key distinguishing features
-- **Formulas / Equations**: All relevant mathematical representations with explanations
-- **Examples / Real-Life Examples**: Multiple practical, relatable examples
-- **Solved Problems**: Worked-out numerical examples if applicable
-- **Advantages**: Comprehensive list with brief explanations
-- **Disadvantages / Limitations**: Honest assessment of drawbacks
-- **Applications**: Real-world use cases across industries
-- **Comparison with Related Concepts**: If relevant, compare with alternatives
-- **TL;DR / Quick Summary**: Bullet points for quick revision
-- **Memory Aids / Mnemonics**: Tricks and tips to remember concepts
-- **Common Mistakes to Avoid**: Frequent student errors
-- **Conclusion**: Key takeaways
+- **Definition / Core Concept**: Clear, precise technical definition of the "{topic}"
 
-FORMATTING REQUIREMENTS:
-- Generate 2-3 Mermaid diagrams for processes, architectures, or relationships
-- Build a final '## CITATIONS' section mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to source URLs
-- Inline citations: "... property ... [GFG]" or "... step ... [Wiki]" after statements
-- Bold important keywords/terms with **...** (e.g., **algorithm name**, **θ**, **γ**, **α**)
-- Use tables for comparisons, specifications, or structured data
-- Use numbered lists for sequential steps, bullet points for features/properties
+TARGET LENGTH: 1000-2000 words for comprehensive exam preparation.
 
-TARGET LENGTH: 2500-4000 words for comprehensive exam preparation.
-
-Start with '# {topic}' and organize sections in a logical educational flow.
+Start with '# {topic}' and then the sections in a logical order.
 """.strip()
 
 def generate_notes_events(topic: str, *, stop_event: Optional[threading.Event] = None, variant: str = "detailed", degree: Optional[str] = None) -> Iterator[Tuple[str, Dict[str, Any]]]:
@@ -2099,6 +2069,16 @@ class TopicIn(BaseModel):
         return trimmed
 
 
+class TopicUpsertIn(TopicIn):
+    """Topic payload for unit create/update.
+
+    When `id` is provided, the server updates that existing topic row.
+    When `id` is omitted, the server inserts a new topic row.
+    """
+
+    id: Optional[uuid.UUID] = None
+
+
 class UnitIn(BaseModel):
     unit_title: str = Field(..., min_length=1)
     topics: List[TopicIn]
@@ -2208,7 +2188,7 @@ class SyllabusCourseSimpleUpdateIn(SyllabusCourseSimpleBase):
 
 class UnitTopicsIn(BaseModel):
     unit_title: str = Field(..., min_length=1, max_length=256)
-    topics: List[TopicIn] = Field(default_factory=list)
+    topics: List[TopicUpsertIn] = Field(default_factory=list)
 
     @validator("unit_title", pre=True)
     def _normalize_unit_title(cls, value: Any):  # noqa: N805
@@ -3039,6 +3019,50 @@ def _normalize_parsed_struct(parsed: dict, hints: dict) -> ParsedSyllabusOut:
 GEMINI_PARSE_MODEL = os.getenv("GEMINI_PARSE_MODEL", "gemini-2.5-flash").strip()
 
 
+SYLLABUS_AI_PARSE_PROMPT = """Analyze this university syllabus/curriculum document and extract the structure as JSON.
+
+This is a typical university syllabus with the following structure:
+- Subject Code (e.g., 25UMAT21, CS101, AI PE703)
+- Subject Title (e.g., DIFFERENTIAL EQUATIONS & TRANSFORMS)
+- Course Prerequisites, Objectives, Outcomes (CO1-CO5) - skip these sections
+- SYLLABUS section with UNIT I through UNIT V (or more)
+- Each unit has: Unit number, Title, Topics, and Hours (e.g., 12)
+- Text Books, Reference Books sections at the end - skip these
+
+Extract all subjects/courses with their units and topics. Return ONLY valid JSON in this exact format:
+{
+  "subjects": [
+    {
+      "name": "Subject Title Here",
+      "code": "SUBJECT_CODE or null if not found",
+      "units": [
+        {
+          "name": "Unit Title (e.g., ORDINARY DIFFERENTIAL EQUATIONS)",
+          "unit_number": 1,
+          "topics": [
+            {"name": "Topic 1 - should be a specific concept", "order_index": 0},
+            {"name": "Topic 2", "order_index": 1}
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+RULES:
+1. Extract ALL subjects mentioned in the document
+2. For each subject, extract ALL units/modules (usually UNIT I, II, III, IV, V)
+3. For each unit, extract ALL topics - split by commas, dashes, or line breaks
+4. SKIP sections: Course Prerequisites, Course Objectives, Course Outcomes (CO1-CO5), Text Books, Reference Books, Total Periods
+5. If unit numbers are not explicit, infer them from order (1, 2, 3...)
+6. If subject codes are not present, set code to null
+7. Clean up topic names - remove leading bullets, numbers, or special characters
+8. Return ONLY the JSON, no markdown formatting or explanation
+
+Document text:
+"""
+
+
 def _gemini_parse(text: str, hints: dict) -> Optional[dict]:
     if not GEMINI_API_KEY:
         return None
@@ -3050,21 +3074,15 @@ def _gemini_parse(text: str, hints: dict) -> Optional[dict]:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(GEMINI_PARSE_MODEL or "gemini-2.5-flash")
-        prompt = (
-            "You are a strict JSON parser for academic syllabi. Given the raw syllabus text, return ONLY JSON with keys: "
-            "semester (integer 1-12, optional), course_code (string, optional), title (string, optional), "
-            "units (array of {unit_title (string), topics: array of {topic (string)}}). "
-            "Omit any units or topics that correspond to labs, laboratory sessions, practicals, experiments, or sessionals. "
-            "Do not include explanations or commentary; respond with JSON only."
-        )
+        
         # Limit the text length to keep latency low
-        max_chars = int(os.getenv("GEMINI_PARSE_MAX_CHARS", "20000"))
+        max_chars = int(os.getenv("GEMINI_PARSE_MAX_CHARS", "100000"))
         safe_text = (text or "")[:max_chars]
-        content = f"Hints: {json.dumps(hints or {})}\n\nSyllabus Text:\n{safe_text}"
-        resp = model.generate_content([
-            {"text": prompt},
-            {"text": content},
-        ])
+        
+        # Use the improved syllabus parsing prompt
+        full_prompt = SYLLABUS_AI_PARSE_PROMPT + safe_text
+        
+        resp = model.generate_content(full_prompt)
         raw = getattr(resp, "text", None)
         if not raw:
             try:
@@ -3074,10 +3092,36 @@ def _gemini_parse(text: str, hints: dict) -> Optional[dict]:
         if not raw:
             return None
 
+        # Extract JSON from response (might be wrapped in markdown code blocks)
         m = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
         jtxt = m.group(1) if m else raw
-        return json.loads(jtxt)
-    except Exception:
+        
+        parsed = json.loads(jtxt)
+        
+        # Convert new format to expected format if it has 'subjects' key
+        if "subjects" in parsed and parsed["subjects"]:
+            # Take the first subject and convert to old format
+            first_subject = parsed["subjects"][0]
+            units = []
+            for unit in first_subject.get("units", []):
+                topics = []
+                for topic in unit.get("topics", []):
+                    topic_name = topic.get("name") if isinstance(topic, dict) else str(topic)
+                    if topic_name:
+                        topics.append({"topic": topic_name})
+                units.append({
+                    "unit_title": unit.get("name") or f"Unit {unit.get('unit_number', 1)}",
+                    "topics": topics
+                })
+            return {
+                "course_code": first_subject.get("code"),
+                "title": first_subject.get("name"),
+                "units": units
+            }
+        
+        return parsed
+    except Exception as e:
+        print(f"[GEMINI_PARSE] Error: {e}")
         return None
 
 
@@ -5974,6 +6018,106 @@ async def upload_syllabus_pdf_bulk(
 
     sections = _split_subject_sections(raw_text)
     results: List[SyllabusCourseOut] = []
+    use_ai = not _to_bool(prefer_naive)  # Use AI by default unless prefer_naive is set
+    sem_val = int(semester) if semester else 1
+    
+    # Helper function to process a subject from AI-parsed data
+    async def save_subject_from_ai(subject_data: dict, sem: int) -> Optional[SyllabusCourseOut]:
+        try:
+            units_in: List[UnitIn] = []
+            for unit in subject_data.get("units", []):
+                topics_in = []
+                for topic in unit.get("topics", []):
+                    topic_name = topic.get("name") if isinstance(topic, dict) else str(topic)
+                    if topic_name and topic_name.strip():
+                        topics_in.append(TopicIn(topic=topic_name.strip()))
+                if topics_in:
+                    units_in.append(UnitIn(
+                        unit_title=unit.get("name") or f"Unit {unit.get('unit_number', 1)}",
+                        topics=topics_in
+                    ))
+            
+            if not units_in:
+                return None
+            
+            # Filter out lab units
+            filtered_units = _filter_lab_units(units_in)
+            if not filtered_units:
+                filtered_units = units_in
+            
+            course_code = (subject_data.get("code") or "UNKNOWN").upper().strip()
+            title = (subject_data.get("name") or "Untitled Course").strip()
+            
+            course_in = SyllabusCourseIn(
+                batch_id=batch_id,
+                semester=sem,
+                course_code=course_code,
+                title=title,
+                units=filtered_units,
+            )
+            course = await run_in_threadpool(upsert_syllabus_course, course_in)
+            units_saved = await run_in_threadpool(sync_units_and_topics, course.id, filtered_units)
+            return SyllabusCourseOut(
+                id=course.id,
+                batch_id=course.batch_id,
+                semester=course.semester,
+                course_code=course.course_code,
+                title=course.title,
+                units=units_saved,
+            )
+        except Exception as e:
+            print(f"[UPLOAD-BULK] Error saving subject: {e}")
+            return None
+    
+    # Try AI parsing first for better accuracy with university syllabi
+    if use_ai and GEMINI_API_KEY:
+        try:
+            print(f"[UPLOAD-BULK] Using AI (Gemini) for syllabus parsing...")
+            ai_parsed = await run_in_threadpool(_gemini_parse, raw_text, {})
+            
+            if ai_parsed:
+                # Check if AI returned multiple subjects
+                if "subjects" in ai_parsed and ai_parsed["subjects"]:
+                    print(f"[UPLOAD-BULK] AI found {len(ai_parsed['subjects'])} subjects")
+                    for subj in ai_parsed["subjects"]:
+                        result = await save_subject_from_ai(subj, sem_val)
+                        if result:
+                            results.append(result)
+                elif ai_parsed.get("units"):
+                    # Single subject format
+                    subj_data = {
+                        "code": ai_parsed.get("course_code"),
+                        "name": ai_parsed.get("title"),
+                        "units": ai_parsed.get("units", [])
+                    }
+                    # Convert units to new format if needed
+                    converted_units = []
+                    for u in ai_parsed.get("units", []):
+                        topics = []
+                        for t in u.get("topics", []):
+                            topic_name = t.get("topic") if isinstance(t, dict) else str(t)
+                            if topic_name:
+                                topics.append({"name": topic_name})
+                        converted_units.append({
+                            "name": u.get("unit_title", "Unit"),
+                            "unit_number": len(converted_units) + 1,
+                            "topics": topics
+                        })
+                    subj_data["units"] = converted_units
+                    result = await save_subject_from_ai(subj_data, sem_val)
+                    if result:
+                        results.append(result)
+                
+                if results:
+                    print(f"[UPLOAD-BULK] AI parsing successful: saved {len(results)} courses")
+                    return results
+        except Exception as e:
+            print(f"[UPLOAD-BULK] AI parsing failed, falling back to heuristic: {e}")
+    
+    # Fallback to heuristic parsing
+    print(f"[UPLOAD-BULK] Using heuristic parsing...")
+    sections = _split_subject_sections(raw_text)
+    
     if not sections:
         # Fallback: treat as a single subject using the single-subject pipeline
         hints = {"course_code": None, "title": None}
@@ -5989,7 +6133,6 @@ async def upload_syllabus_pdf_bulk(
                     title=fallback_norm.title or norm.title,
                     units=filtered_units,
                 )
-        sem_val = int(semester) if semester else 1
         course_in = SyllabusCourseIn(
             batch_id=batch_id,
             semester=sem_val,
@@ -6012,7 +6155,6 @@ async def upload_syllabus_pdf_bulk(
         return results
 
     # Multi-section path
-    sem_val = int(semester) if semester else 1
     for sec in sections:
         sec_text = sec.get("text") or ""
         hints = {"course_code": sec.get("code"), "title": sec.get("title")}
@@ -6105,7 +6247,18 @@ def _is_admin_user(user_id: Optional[str], email: Optional[str]) -> bool:
 
 
 @academics_router.get("/api/admin/users", summary="Admin: list user profiles")
-def list_admin_users(authorization: Optional[str] = Header(default=None), limit: int = Query(default=500, ge=1, le=2000)):
+def list_admin_users(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
+    q: Optional[str] = Query(default=None, max_length=120),
+    role: Optional[str] = Query(default=None, max_length=32),
+    department: Optional[str] = Query(default=None, max_length=120),
+    section: Optional[str] = Query(default=None, max_length=32),
+    batch_range: Optional[str] = Query(default=None, max_length=32),
+    semester: Optional[int] = Query(default=None, ge=1, le=12),
+    min_streak: Optional[int] = Query(default=None, ge=0, le=3650),
+    last_login_days: Optional[int] = Query(default=None, ge=1, le=3650),
+):
     token = _parse_bearer_token(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -6126,46 +6279,107 @@ def list_admin_users(authorization: Optional[str] = Header(default=None), limit:
         raise HTTPException(status_code=403, detail="Not an admin user")
 
     supabase = get_service_client()
-    # Core fields; attempt extended (with department_id/batch_id). Fallback if columns absent (42703).
+    # Core fields from user_profiles. Department/batch are sourced from user_education.
     base_cols = [
         "id","auth_user_id","email","name","gender","phone","semester","regno",
         "profile_image_url","verification_score","updated_at","created_at","linkedin","github",
         "leetcode","skills","technologies","specializations"
     ]
-    extended_cols = base_cols + ["department_id","batch_id"]
-    use_extended = True
-    rows: List[dict] = []
-    for attempt in (1,2):
-        select_cols = ",".join(extended_cols if use_extended else base_cols)
-        try:
-            res = (
-                supabase.table("user_profiles")
-                .select(select_cols)
-                .order("updated_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-        except Exception as e:  # Catch APIError directly (column missing)
-            msg = str(e)
-            if use_extended and ("department_id" in msg or "batch_id" in msg):
-                use_extended = False
+    try:
+        query = supabase.table("user_profiles").select(",".join(base_cols))
+        if q:
+            qv = (q or "").strip()
+            if qv:
+                # Search by name/email/regno (case-insensitive)
+                pattern = f"%{qv}%"
+                query = query.or_(
+                    f"name.ilike.{pattern},email.ilike.{pattern},regno.ilike.{pattern}"
+                )
+        res = query.order("updated_at", desc=True).limit(limit).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error (list users) exec: {str(e)}")
+    err = getattr(res, "error", None)
+    if err:
+        raise HTTPException(status_code=500, detail=f"Supabase error (list users): {err}")
+    rows: List[dict] = getattr(res, "data", []) or []
+
+    # Load roles for all involved auth_user_ids in one query
+    auth_ids = [r.get("auth_user_id") for r in rows if r.get("auth_user_id")]
+    uniq_ids = list({i for i in auth_ids if i})
+
+    # Fetch primary education per profile from user_education.
+    # NOTE: user_education links to user_profiles via user_profile_id (not auth_user_id).
+    edu_map: Dict[str, dict] = {}
+    profile_ids = [r.get("id") for r in rows if r.get("id")]
+    uniq_profile_ids = list({pid for pid in profile_ids if pid})
+    if uniq_profile_ids:
+        # Try with order_index if present, else fallback.
+        edu_select_try = [
+            "user_profile_id,department_id,batch_id,college_id,degree_id,section,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,college_id,degree_id,section,current_semester,regno,created_at",
+            "user_profile_id,department_id,batch_id,college_id,degree_id,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,college_id,degree_id,current_semester,regno,created_at",
+            "user_profile_id,department_id,batch_id,college_id,section,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,college_id,section,current_semester,regno,created_at",
+            "user_profile_id,department_id,batch_id,college_id,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,college_id,current_semester,regno,created_at",
+            # Fallback if user_education has no college_id
+            "user_profile_id,department_id,batch_id,section,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,section,current_semester,regno,created_at",
+            "user_profile_id,department_id,batch_id,current_semester,regno,order_index,created_at",
+            "user_profile_id,department_id,batch_id,current_semester,regno,created_at",
+        ]
+        edu_rows: List[dict] = []
+        for sel in edu_select_try:
+            try:
+                eres = supabase.table("user_education").select(sel).in_("user_profile_id", uniq_profile_ids).execute()
+            except Exception as e:
+                msg = str(e)
+                if "order_index" in sel and "order_index" in msg:
+                    continue
+                if "degree_id" in sel and "degree_id" in msg:
+                    continue
+                # If user_education doesn't exist or query fails, just skip education enrichment.
+                edu_rows = []
+                break
+            if getattr(eres, "error", None):
+                edu_rows = []
+                break
+            edu_rows = getattr(eres, "data", []) or []
+            break
+
+        def _edu_rank(ed: dict) -> Tuple[int, float]:
+            oi_raw = ed.get("order_index")
+            try:
+                oi = int(oi_raw) if oi_raw is not None else 9999
+            except Exception:
+                oi = 9999
+            ts = 0.0
+            try:
+                if ed.get("created_at"):
+                    ts = datetime.fromisoformat(str(ed.get("created_at")).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ts = 0.0
+            # Prefer lower order_index; for ties prefer latest created_at.
+            return (oi, -ts)
+
+        for ed in edu_rows:
+            pid = ed.get("user_profile_id")
+            if not pid:
                 continue
-            raise HTTPException(status_code=500, detail=f"Supabase error (list users) exec: {msg}")
+            prev = edu_map.get(pid)
+            if not prev or _edu_rank(ed) < _edu_rank(prev):
+                edu_map[pid] = ed
 
-        err = getattr(res, "error", None)
-        if err:
-            # Some errors might still surface here (non-column related)
-            raise HTTPException(status_code=500, detail=f"Supabase error (list users): {err}")
-        rows = getattr(res, "data", []) or []
-        break
-
-    have_dept_batch = use_extended  # only true if extended columns succeeded
-
-    # Preload department + batch info to enrich output
-    dept_ids = {r.get("department_id") for r in rows if have_dept_batch and r.get("department_id")}
-    batch_ids = {r.get("batch_id") for r in rows if have_dept_batch and r.get("batch_id")}
+    # Preload department + batch + college + degree info to enrich output
+    dept_ids = {ed.get("department_id") for ed in edu_map.values() if ed.get("department_id")}
+    batch_ids = {ed.get("batch_id") for ed in edu_map.values() if ed.get("batch_id")}
+    college_ids = {ed.get("college_id") for ed in edu_map.values() if ed.get("college_id")}
+    degree_ids = {ed.get("degree_id") for ed in edu_map.values() if ed.get("degree_id")}
     dept_map: Dict[str, dict] = {}
     batch_map: Dict[str, dict] = {}
+    college_map: Dict[str, dict] = {}
+    degree_map: Dict[str, dict] = {}
     role_map: Dict[str, str] = {}
     if dept_ids:
         dres = supabase.table("departments").select("id,name").in_("id", list(dept_ids)).execute()
@@ -6177,10 +6391,17 @@ def list_admin_users(authorization: Optional[str] = Header(default=None), limit:
         if not getattr(bres, "error", None):
             for b in bres.data or []:
                 batch_map[b.get("id")] = b
-    # Load roles for all involved auth_user_ids in one query
+    if college_ids:
+        cres = supabase.table("colleges").select("id,name").in_("id", list(college_ids)).execute()
+        if not getattr(cres, "error", None):
+            for c in cres.data or []:
+                college_map[c.get("id")] = c
+    if degree_ids:
+        gres = supabase.table("degrees").select("id,name").in_("id", list(degree_ids)).execute()
+        if not getattr(gres, "error", None):
+            for g in gres.data or []:
+                degree_map[g.get("id")] = g
     try:
-        auth_ids = [r.get("auth_user_id") for r in rows if r.get("auth_user_id")]
-        uniq_ids = list({i for i in auth_ids if i})
         if uniq_ids:
             rres = supabase.table("admin_roles").select("auth_user_id,role").in_("auth_user_id", uniq_ids).execute()
             if not getattr(rres, "error", None):
@@ -6191,22 +6412,101 @@ def list_admin_users(authorization: Optional[str] = Header(default=None), limit:
     except Exception:
         pass
 
+    # Load streaks for all profiles in one query (table name may vary across deployments).
+    # NOTE: academicas.html uses /api/streak which reads from notex_streak.
+    streak_current_map: Dict[str, int] = {}  # profile_id -> current_streak
+    streak_longest_map: Dict[str, int] = {}  # profile_id -> longest_streak
+    streak_last_activity_map: Dict[str, Any] = {}  # profile_id -> last_activity_date
+    if uniq_profile_ids:
+        for streak_table in ("notex_streak", "user_streaks"):
+            try:
+                sres = supabase.table(streak_table).select(
+                    "user_profile_id,current_streak,longest_streak,last_activity_date"
+                ).in_(
+                    "user_profile_id", uniq_profile_ids
+                ).execute()
+            except Exception:
+                continue
+            if getattr(sres, "error", None):
+                continue
+            for s in (getattr(sres, "data", None) or []):
+                pid = s.get("user_profile_id")
+                if pid:
+                    try:
+                        streak_current_map[pid] = int(s.get("current_streak") or 0)
+                    except Exception:
+                        streak_current_map[pid] = 0
+                    try:
+                        streak_longest_map[pid] = int(s.get("longest_streak") or 0)
+                    except Exception:
+                        streak_longest_map[pid] = 0
+                    if s.get("last_activity_date") is not None:
+                        streak_last_activity_map[pid] = s.get("last_activity_date")
+            # If we got any rows, stop trying fallbacks.
+            if streak_current_map:
+                break
+
+    # Load last_seen_at per auth user from user_sessions (aggregate in Python).
+    last_seen_map: Dict[str, str] = {}  # auth_user_id -> ISO timestamp
+    if uniq_ids:
+        try:
+            # Cap rows to avoid unbounded reads on very large session tables.
+            sres = (
+                supabase.table("user_sessions")
+                .select("user_id,last_seen_at")
+                .in_("user_id", uniq_ids)
+                .order("last_seen_at", desc=True)
+                .limit(50000)
+                .execute()
+            )
+            if not getattr(sres, "error", None):
+                for row in (getattr(sres, "data", None) or []):
+                    uid = row.get("user_id")
+                    ts = row.get("last_seen_at")
+                    if uid and ts and uid not in last_seen_map:
+                        # Because results are ordered desc, first seen is the latest.
+                        last_seen_map[uid] = ts
+        except Exception:
+            pass
+
     out: List[dict] = []
     for r in rows:
-        dept = dept_map.get(r.get("department_id")) if have_dept_batch else {}
-        batch = batch_map.get(r.get("batch_id")) if have_dept_batch else {}
+        pid = r.get("id")
+        edu = edu_map.get(pid, {}) if pid else {}
+        dept = dept_map.get(edu.get("department_id")) if edu.get("department_id") else {}
+        batch = batch_map.get(edu.get("batch_id")) if edu.get("batch_id") else {}
+        college = college_map.get(edu.get("college_id")) if edu.get("college_id") else {}
+        degree = degree_map.get(edu.get("degree_id")) if edu.get("degree_id") else {}
+        semester_val = r.get("semester") if r.get("semester") is not None else edu.get("current_semester")
+        regno_val = r.get("regno") if r.get("regno") else edu.get("regno")
+        user_id_val = r.get("auth_user_id")
+        current_streak_val = streak_current_map.get(pid, 0) if pid else 0
+        longest_streak_val = streak_longest_map.get(pid, 0) if pid else 0
+        last_seen_val = last_seen_map.get(user_id_val) if user_id_val else None
+        batch_range_val = (f"{batch.get('from_year')}-{batch.get('to_year')}" if batch and batch.get('from_year') and batch.get('to_year') else None)
+
         out.append({
             "profile_id": r.get("id"),
-            "user_id": r.get("auth_user_id"),
+            "user_id": user_id_val,
             "name": r.get("name"),
             "email": r.get("email"),
             "role": role_map.get(r.get("auth_user_id"), "student"),
-            "semester": r.get("semester"),
-            "regno": r.get("regno"),
+            "semester": semester_val,
+            "regno": regno_val,
+            "college": college.get("name") if college else None,
+            "degree": degree.get("name") if degree else None,
             "department": dept.get("name") if dept else None,
+            "section": edu.get("section") if edu else None,
             "batch_from": batch.get("from_year") if batch else None,
             "batch_to": batch.get("to_year") if batch else None,
-            "batch_range": (f"{batch.get('from_year')}-{batch.get('to_year')}" if batch and batch.get('from_year') and batch.get('to_year') else None),
+            "batch_range": batch_range_val,
+            # Back-compat (users.html initially used streak_current)
+            "streak_current": current_streak_val,
+            # Align naming with /api/streak response (academicas.html)
+            "current_streak": current_streak_val,
+            "longest_streak": longest_streak_val,
+            "last_activity_date": streak_last_activity_map.get(pid) if pid else None,
+            "last_seen_at": last_seen_val,
             "profile_image_url": r.get("profile_image_url"),
             "verification_score": r.get("verification_score"),
             "linkedin": r.get("linkedin"),
@@ -6218,7 +6518,47 @@ def list_admin_users(authorization: Optional[str] = Header(default=None), limit:
             "updated_at": r.get("updated_at"),
             "created_at": r.get("created_at"),
         })
-    return {"users": out, "count": len(out)}
+
+    # Server-side filters (for real-time filter UI)
+    def _norm(s: Any) -> str:
+        return (str(s).strip().lower() if s is not None else "")
+
+    filtered = out
+    if role:
+        want = _norm(role)
+        filtered = [u for u in filtered if _norm(u.get("role")) == want]
+    if department:
+        want = _norm(department)
+        filtered = [u for u in filtered if _norm(u.get("department")) == want]
+    if section:
+        want = _norm(section)
+        filtered = [u for u in filtered if _norm(u.get("section")) == want]
+    if batch_range:
+        want = _norm(batch_range)
+        filtered = [u for u in filtered if _norm(u.get("batch_range")) == want]
+    if semester is not None:
+        filtered = [u for u in filtered if str(u.get("semester") or "") == str(semester)]
+    if min_streak is not None:
+        filtered = [u for u in filtered if int(u.get("current_streak") or 0) >= int(min_streak)]
+    if last_login_days is not None:
+        cutoff = datetime.utcnow() - timedelta(days=int(last_login_days))
+
+        def _is_recent(u: dict) -> bool:
+            ts = u.get("last_seen_at")
+            if not ts:
+                return False
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                # Compare as naive UTC-ish (safe even if dt is tz-aware)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                return dt >= cutoff
+            except Exception:
+                return False
+
+        filtered = [u for u in filtered if _is_recent(u)]
+
+    return {"users": filtered, "count": len(filtered)}
 
 
 @academics_router.get("/api/admin/self-check", summary="Admin: verify current token admin status")
@@ -6244,6 +6584,40 @@ def admin_self_check(authorization: Optional[str] = Header(default=None)):
 
 class RoleUpdateIn(BaseModel):
     role: str
+
+
+class AdminAcademicUpdateIn(BaseModel):
+    # Optional FK ids (preferred when known)
+    college_id: Optional[str] = None
+    degree_id: Optional[str] = None
+    department_id: Optional[str] = None
+    batch_id: Optional[str] = None
+
+    college_name: Optional[str] = None
+    degree_name: Optional[str] = None
+    department_name: Optional[str] = None
+    batch_from: Optional[int] = Field(default=None, ge=1900, le=2100)
+    batch_to: Optional[int] = Field(default=None, ge=1900, le=2100)
+    batch_range: Optional[str] = None  # e.g. "2022-2026"
+    section: Optional[str] = None
+    semester: Optional[int] = Field(default=None, ge=1, le=12)
+    regno: Optional[str] = None
+
+    @validator(
+        "college_id",
+        "degree_id",
+        "department_id",
+        "batch_id",
+        "college_name",
+        "degree_name",
+        "department_name",
+        "batch_range",
+        "section",
+        "regno",
+        pre=True,
+    )
+    def _trim_admin_academic(cls, v: Any):  # noqa: N805
+        return _strip_or_none(v)
 
 
 def _get_auth_user(authorization: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -6284,7 +6658,199 @@ def _count_admins(supabase) -> int:
         return 0
 
 
-VALID_ROLES = {"admin","teacher","student","moderator"}
+VALID_ROLES = {"admin", "teacher", "student", "moderator", "employee"}
+
+
+def _admin_pick_primary_education_row(supabase, profile_id: str) -> Optional[dict]:
+    try:
+        res = (
+            supabase.table("user_education")
+            .select("id,order_index,created_at")
+            .eq("user_profile_id", profile_id)
+            .limit(50)
+            .execute()
+        )
+    except Exception:
+        return None
+    if getattr(res, "error", None) or not getattr(res, "data", None):
+        return None
+    rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id")]
+    if not rows:
+        return None
+
+    def _rank(ed: dict) -> Tuple[int, float]:
+        oi_raw = ed.get("order_index")
+        try:
+            oi = int(oi_raw) if oi_raw is not None else 9999
+        except Exception:
+            oi = 9999
+        ts = 0.0
+        try:
+            if ed.get("created_at"):
+                ts = datetime.fromisoformat(str(ed.get("created_at")).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0.0
+        return (oi, -ts)
+
+    rows.sort(key=_rank)
+    return rows[0]
+
+
+def _admin_safe_update_user_education(supabase, edu_id: str, updates: Dict[str, Any]):
+    """Best-effort update: retries by dropping unknown columns if schema differs."""
+    if not updates:
+        return
+    retry_payload = dict(updates)
+    for _attempt in range(3):
+        try:
+            upd = supabase.table("user_education").update(retry_payload).eq("id", edu_id).execute()
+        except APIError as exc:
+            err_message = getattr(exc, "message", None) or getattr(exc, "details", None) or str(exc)
+            lower_msg = (err_message or "").lower()
+            # Undefined column (Postgres 42703)
+            if getattr(exc, "code", None) == "42703" or "42703" in lower_msg or "column" in lower_msg and "does not exist" in lower_msg:
+                # Drop likely FK columns first
+                removed = False
+                for k in ("college_id", "degree_id", "department_id", "batch_id"):
+                    if k in retry_payload:
+                        retry_payload.pop(k, None)
+                        removed = True
+                if removed:
+                    continue
+            raise HTTPException(status_code=500, detail=f"Supabase error (update education): {err_message}")
+        if getattr(upd, "error", None):
+            msg = str(upd.error)
+            lowered = msg.lower()
+            if ("42703" in lowered) or ("does not exist" in lowered and "column" in lowered):
+                removed = False
+                for k in ("college_id", "degree_id", "department_id", "batch_id"):
+                    if k in retry_payload:
+                        retry_payload.pop(k, None)
+                        removed = True
+                if removed:
+                    continue
+            raise HTTPException(status_code=500, detail=f"Supabase error (update education): {msg}")
+        break
+
+
+@academics_router.post("/api/admin/users/{auth_user_id}/academic", summary="Admin: update user's academic/education details")
+def admin_update_user_academic(
+    auth_user_id: str,
+    payload: AdminAcademicUpdateIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    supabase = get_service_client()
+
+    # Resolve profile id
+    prof_q = (
+        supabase.table("user_profiles")
+        .select("id")
+        .eq("auth_user_id", auth_user_id)
+        .limit(1)
+        .execute()
+    )
+    if getattr(prof_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (get profile): {prof_q.error}")
+    if not prof_q.data:
+        raise HTTPException(status_code=404, detail="User profile not found")
+    profile_id = prof_q.data[0].get("id")
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    data = payload.dict(exclude_unset=True)
+    # Update basic user_profiles fields when present
+    prof_updates: Dict[str, Any] = {}
+    if data.get("semester") is not None:
+        prof_updates["semester"] = data.get("semester")
+    if data.get("regno") is not None:
+        prof_updates["regno"] = data.get("regno")
+    if prof_updates:
+        upd = supabase.table("user_profiles").update(_supabase_payload(prof_updates)).eq("id", profile_id).execute()
+        if getattr(upd, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (update profile academic): {upd.error}")
+
+    # Prepare a single education row (for FK resolution) without wiping other rows
+    school = data.get("college_name")
+    college_id = data.get("college_id")
+    degree_name = data.get("degree_name")
+    degree_id = data.get("degree_id")
+    dept = data.get("department_name")
+    department_id = data.get("department_id")
+    batch_id = data.get("batch_id")
+    section = data.get("section")
+    regno = data.get("regno")
+    current_semester = data.get("semester")
+
+    if not school and college_id:
+        try:
+            cres = supabase.table("colleges").select("name").eq("id", college_id).limit(1).execute()
+            if not getattr(cres, "error", None) and (cres.data or []):
+                school = cres.data[0].get("name")
+        except Exception:
+            pass
+
+    batch_range = data.get("batch_range")
+    if not batch_range:
+        bf = data.get("batch_from")
+        bt = data.get("batch_to")
+        if bf is not None and bt is not None:
+            batch_range = f"{int(bf)}-{int(bt)}"
+
+    edu_in = {
+        "school": school or "",
+        "degree": degree_name,
+        "department": dept,
+        "batch_range": batch_range,
+        "section": section,
+        "regno": regno,
+        "current_semester": current_semester,
+        "grade": None,
+        "activities": None,
+        "description": None,
+        "college_id": college_id,
+        "degree_id": degree_id,
+        "department_id": department_id,
+        "batch_id": batch_id,
+    }
+
+    prepared_list = _prepare_education_rows([edu_in])
+    if not prepared_list:
+        # If admin didn't provide college_name, we can't build education entry; still allow profile update.
+        return {"ok": True, "updated": True, "auth_user_id": auth_user_id, "profile_id": profile_id, "education_updated": False}
+
+    prepared = dict(prepared_list[0])
+    # Remove fields not in user_education table payload
+    prepared.pop("id", None)
+    prepared.pop("updated_at", None)
+    # Ensure we don't set null-like empty strings
+    edu_updates = {k: v for k, v in prepared.items() if v is not None}
+    edu_updates["updated_at"] = datetime.utcnow().isoformat()
+
+    # Update primary education row, or insert if missing
+    primary = _admin_pick_primary_education_row(supabase, profile_id)
+    if primary and primary.get("id"):
+        _admin_safe_update_user_education(supabase, primary["id"], edu_updates)
+        edu_row_id = primary["id"]
+    else:
+        insert_payload = {**edu_updates, "user_profile_id": profile_id}
+        if "order_index" not in insert_payload:
+            insert_payload["order_index"] = 0
+        ins = supabase.table("user_education").insert(insert_payload).execute()
+        if getattr(ins, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (insert education): {ins.error}")
+        # Try refetch
+        ref = _admin_pick_primary_education_row(supabase, profile_id)
+        edu_row_id = (ref.get("id") if ref else None)
+
+    return {
+        "ok": True,
+        "updated": True,
+        "auth_user_id": auth_user_id,
+        "profile_id": profile_id,
+        "education_updated": True,
+        "user_education_id": edu_row_id,
+    }
 
 
 @academics_router.post("/api/admin/users/{auth_user_id}/role", summary="Admin: update a user's role")
@@ -6314,8 +6880,8 @@ def update_user_role(auth_user_id: str, payload: RoleUpdateIn, authorization: Op
             del_res = supabase.table('admin_roles').delete().eq('auth_user_id', auth_user_id).execute()
             if getattr(del_res, 'error', None):
                 raise HTTPException(status_code=500, detail=f"Role demote failed: {del_res.error}")
-        # For non-admin roles we can store or remove row (choose store for teacher/moderator custom permissions)
-        if desired in {"teacher","moderator"}:
+        # For non-admin roles we can store or remove row (choose store for non-student roles)
+        if desired in {"teacher", "moderator", "employee"}:
             up_res = supabase.table('admin_roles').upsert({"auth_user_id": auth_user_id, "role": desired}).execute()
             if getattr(up_res, 'error', None):
                 raise HTTPException(status_code=500, detail=f"Role update failed: {up_res.error}")
@@ -8214,6 +8780,133 @@ def update_degree(degree_id: uuid.UUID, payload: DegreeSimpleCreateIn):
     raise HTTPException(status_code=404, detail="Updated degree not found in college snapshot.")
 
 
+def _check_department_delete_blockers(supabase: Client, department_id: str) -> List[str]:
+    """Return list of human-readable blockers for deleting a department id."""
+    blocking_sources: List[str] = []
+    dependency_checks = [
+        ("marketplace_notes", "marketplace notes", "department_id"),
+        ("teacher_applications", "teacher applications", "department_id"),
+        ("teacher_classes", "teacher classes", "department_id"),
+        ("teacher_profiles", "teacher profiles", "department_id"),
+        ("user_education", "user education records", "department_id"),
+    ]
+    for table_name, label, column in dependency_checks:
+        check = (
+            supabase.table(table_name)
+            .select(column)
+            .eq(column, str(department_id))
+            .limit(1)
+            .execute()
+        )
+        if getattr(check, "error", None):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Supabase error (check {label} for department): {check.error}",
+            )
+        if check.data:
+            blocking_sources.append(label)
+    return blocking_sources
+
+
+@academics_router.delete(
+    "/api/degrees/{degree_id}",
+    summary="Delete a degree, its departments, batches, and related syllabus data",
+)
+def delete_degree(degree_id: uuid.UUID):
+    supabase = get_service_client()
+
+    deg_res = (
+        supabase.table("degrees")
+        .select("id,college_id,name")
+        .eq("id", str(degree_id))
+        .limit(1)
+        .execute()
+    )
+    if getattr(deg_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (find degree): {deg_res.error}")
+    if not deg_res.data:
+        raise HTTPException(status_code=404, detail="Degree not found")
+
+    deg_row = deg_res.data[0]
+    college_id_str = deg_row.get("college_id")
+    if not college_id_str:
+        raise HTTPException(status_code=400, detail="Degree missing college reference")
+
+    # Block deletion if other products depend on the degree directly
+    direct_blockers: List[str] = []
+    for table_name, label, column in (
+        ("teacher_classes", "teacher classes", "degree_id"),
+        ("user_education", "user education records", "degree_id"),
+    ):
+        check = supabase.table(table_name).select(column).eq(column, str(degree_id)).limit(1).execute()
+        if getattr(check, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for degree): {check.error}")
+        if check.data:
+            direct_blockers.append(label)
+
+    if direct_blockers:
+        formatted = ", ".join(direct_blockers)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete degree because related data exists: {formatted}. Remove or reassign those records first.",
+        )
+
+    dept_res = (
+        supabase.table("departments")
+        .select("id,name")
+        .eq("degree_id", str(degree_id))
+        .execute()
+    )
+    if getattr(dept_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (list departments for degree): {dept_res.error}")
+
+    # Check blockers per department before any deletion
+    per_dept_blockers: Dict[str, List[str]] = {}
+    for dept_row in dept_res.data or []:
+        dept_id = dept_row.get("id")
+        if not dept_id:
+            continue
+        blockers = _check_department_delete_blockers(supabase, dept_id)
+        if blockers:
+            per_dept_blockers[dept_row.get("name") or dept_id] = blockers
+
+    if per_dept_blockers:
+        # Keep message short but actionable
+        names = ", ".join(list(per_dept_blockers.keys())[:5])
+        suffix = "" if len(per_dept_blockers) <= 5 else f" (+{len(per_dept_blockers) - 5} more)"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete degree because related data exists under departments: {names}{suffix}. Remove or reassign those records first.",
+        )
+
+    stats = {"departments": 0, "batches": 0, "courses": 0}
+    for dept_row in dept_res.data or []:
+        dept_id_str = dept_row.get("id")
+        if not dept_id_str:
+            continue
+        dept_uuid = uuid.UUID(dept_id_str)
+        batch_stats = _cascade_delete_department_batches(supabase, dept_uuid)
+        stats["batches"] += int(batch_stats.get("batches", 0))
+        stats["courses"] += int(batch_stats.get("courses", 0))
+
+        del_dept = supabase.table("departments").delete().eq("id", dept_id_str).execute()
+        if getattr(del_dept, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete department): {del_dept.error}")
+        stats["departments"] += 1
+
+    del_deg = supabase.table("degrees").delete().eq("id", str(degree_id)).execute()
+    if getattr(del_deg, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (delete degree): {del_deg.error}")
+
+    return {
+        "ok": True,
+        "deleted_degree_id": str(degree_id),
+        "deleted_departments": stats["departments"],
+        "deleted_batches": stats["batches"],
+        "deleted_courses": stats["courses"],
+    }
+
+
 @academics_router.post(
     "/api/degrees/{degree_id}/departments",
     response_model=DepartmentWithBatchesOut,
@@ -8486,6 +9179,115 @@ def rename_college(college_id: uuid.UUID, payload: CollegeNameOnlyIn):
     return College(id=uuid.UUID(row["id"]), name=row["name"])
 
 
+@academics_router.delete(
+    "/api/colleges/{college_id}",
+    summary="Delete a college, its degrees/departments/batches, and related syllabus data",
+)
+def delete_college(college_id: uuid.UUID):
+    supabase = get_service_client()
+
+    col_res = (
+        supabase.table("colleges")
+        .select("id,name")
+        .eq("id", str(college_id))
+        .limit(1)
+        .execute()
+    )
+    if getattr(col_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (find college): {col_res.error}")
+    if not col_res.data:
+        raise HTTPException(status_code=404, detail="College not found")
+
+    # Block deletion if other products depend on the college directly
+    direct_blockers: List[str] = []
+    for table_name, label, column in (
+        ("teacher_applications", "teacher applications", "college_id"),
+        ("teacher_profiles", "teacher profiles", "college_id"),
+        ("teacher_classes", "teacher classes", "college_id"),
+        ("user_education", "user education records", "college_id"),
+    ):
+        check = supabase.table(table_name).select(column).eq(column, str(college_id)).limit(1).execute()
+        if getattr(check, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for college): {check.error}")
+        if check.data:
+            direct_blockers.append(label)
+
+    if direct_blockers:
+        formatted = ", ".join(direct_blockers)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete college because related data exists: {formatted}. Remove or reassign those records first.",
+        )
+
+    deg_res = (
+        supabase.table("degrees")
+        .select("id")
+        .eq("college_id", str(college_id))
+        .execute()
+    )
+    if getattr(deg_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (list degrees for college): {deg_res.error}")
+
+    stats = {"degrees": 0, "departments": 0, "batches": 0, "courses": 0}
+    for deg_row in deg_res.data or []:
+        deg_id_str = deg_row.get("id")
+        if not deg_id_str:
+            continue
+
+        dept_res = (
+            supabase.table("departments")
+            .select("id")
+            .eq("degree_id", deg_id_str)
+            .execute()
+        )
+        if getattr(dept_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (list departments for degree): {dept_res.error}")
+
+        # Ensure no department blockers exist (defensive; should already be implied by direct blockers)
+        for drow in dept_res.data or []:
+            did = drow.get("id")
+            if not did:
+                continue
+            blockers = _check_department_delete_blockers(supabase, did)
+            if blockers:
+                formatted = ", ".join(blockers)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot delete college because related data exists under a department: {formatted}. Remove or reassign those records first.",
+                )
+
+        for drow in dept_res.data or []:
+            did = drow.get("id")
+            if not did:
+                continue
+            dept_uuid = uuid.UUID(did)
+            batch_stats = _cascade_delete_department_batches(supabase, dept_uuid)
+            stats["batches"] += int(batch_stats.get("batches", 0))
+            stats["courses"] += int(batch_stats.get("courses", 0))
+            del_dept = supabase.table("departments").delete().eq("id", did).execute()
+            if getattr(del_dept, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (delete department): {del_dept.error}")
+            stats["departments"] += 1
+
+        del_deg = supabase.table("degrees").delete().eq("id", deg_id_str).execute()
+        if getattr(del_deg, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete degree): {del_deg.error}")
+        stats["degrees"] += 1
+
+    del_col = supabase.table("colleges").delete().eq("id", str(college_id)).execute()
+    if getattr(del_col, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (delete college): {del_col.error}")
+
+    return {
+        "ok": True,
+        "deleted_college_id": str(college_id),
+        "deleted_degrees": stats["degrees"],
+        "deleted_departments": stats["departments"],
+        "deleted_batches": stats["batches"],
+        "deleted_courses": stats["courses"],
+    }
+
+
 @academics_router.get("/api/colleges/{college_id}", response_model=CollegeFullOut, summary="Get a college with departments & batches")
 def get_college(college_id: uuid.UUID):
     data = get_college_full(college_id)
@@ -8756,6 +9558,53 @@ def update_batch(batch_id: uuid.UUID, payload: BatchIn):
         raise HTTPException(status_code=500, detail=f"Supabase error (update batch): {upd.error}")
 
     return BatchWithIdOut(id=batch_id, from_year=payload.from_year, to_year=payload.to_year)
+
+
+@academics_router.delete(
+    "/api/batches/{batch_id}",
+    summary="Delete a batch and related syllabus data",
+)
+def delete_batch(batch_id: uuid.UUID):
+    supabase = get_service_client()
+
+    batch_res = (
+        supabase.table("batches")
+        .select("id")
+        .eq("id", str(batch_id))
+        .limit(1)
+        .execute()
+    )
+    if getattr(batch_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (find batch): {batch_res.error}")
+    if not batch_res.data:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    deleted_courses = 0
+    course_res = (
+        supabase.table("syllabus_courses")
+        .select("id")
+        .eq("batch_id", str(batch_id))
+        .execute()
+    )
+    if getattr(course_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (list courses for batch): {course_res.error}")
+
+    for course_row in course_res.data or []:
+        course_id_str = course_row.get("id")
+        if not course_id_str:
+            continue
+        delete_course_cascade(uuid.UUID(course_id_str))
+        deleted_courses += 1
+
+    del_res = supabase.table("batches").delete().eq("id", str(batch_id)).execute()
+    if getattr(del_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (delete batch): {del_res.error}")
+
+    return {
+        "ok": True,
+        "deleted_batch_id": str(batch_id),
+        "deleted_courses": deleted_courses,
+    }
 
 
 @academics_router.post(
@@ -9419,22 +10268,103 @@ def update_unit_topics(unit_id: uuid.UUID, payload: UnitTopicsIn):
             raise HTTPException(status_code=409, detail="Another unit with this title already exists for this course.")
         raise HTTPException(status_code=500, detail=f"Supabase error (update unit): {upd.error}")
 
-    del_res = supabase.table("syllabus_topics").delete().eq("unit_id", str(unit_id)).execute()
-    if getattr(del_res, "error", None):
-        raise HTTPException(status_code=500, detail=f"Supabase error (delete topics): {del_res.error}")
+    # --- Update topics without wiping per-topic URL fields ---
+    # Strategy:
+    # 1) If client sends topic IDs, upsert by ID and delete removed IDs.
+    # 2) If no IDs are sent (legacy clients), fall back to positional update to
+    #    preserve URLs as much as possible.
 
-    topic_rows = [
-        {
-            "unit_id": str(unit_id),
-            "topic": topic.topic,
-            "order_in_unit": index,
-        }
-        for index, topic in enumerate(payload.topics or [])
-    ]
-    if topic_rows:
-        tins = supabase.table("syllabus_topics").insert(topic_rows).execute()
-        if getattr(tins, "error", None):
-            raise HTTPException(status_code=500, detail=f"Supabase error (insert topics): {tins.error}")
+    existing_q = (
+        supabase.table("syllabus_topics")
+        .select("id,order_in_unit")
+        .eq("unit_id", str(unit_id))
+        .order("order_in_unit")
+        .execute()
+    )
+    if getattr(existing_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (list existing topics): {existing_q.error}")
+    existing_rows = existing_q.data or []
+    existing_ids: List[str] = [r.get("id") for r in existing_rows if r.get("id")]
+    existing_id_set: Set[str] = set(existing_ids)
+
+    incoming_topics = payload.topics or []
+    incoming_ids: List[str] = [str(t.id) for t in incoming_topics if getattr(t, "id", None)]
+    incoming_id_set: Set[str] = set(incoming_ids)
+    any_ids_provided = bool(incoming_id_set)
+
+    def _delete_topics_and_progress(topic_ids: List[str]) -> None:
+        if not topic_ids:
+            return
+        for i in range(0, len(topic_ids), 100):
+            chunk = topic_ids[i : i + 100]
+            prog_del = (
+                supabase.table("user_topic_progress")
+                .delete()
+                .in_("topic_id", chunk)
+                .execute()
+            )
+            if getattr(prog_del, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (delete progress): {prog_del.error}")
+
+        t_del = supabase.table("syllabus_topics").delete().in_("id", topic_ids).execute()
+        if getattr(t_del, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete topics): {t_del.error}")
+
+    if any_ids_provided:
+        # Update or insert each topic row
+        for index, topic in enumerate(incoming_topics):
+            tid = getattr(topic, "id", None)
+            if tid is not None and str(tid) in existing_id_set:
+                upd_t = (
+                    supabase.table("syllabus_topics")
+                    .update({"topic": topic.topic, "order_in_unit": index})
+                    .eq("id", str(tid))
+                    .eq("unit_id", str(unit_id))
+                    .execute()
+                )
+                if getattr(upd_t, "error", None):
+                    raise HTTPException(status_code=500, detail=f"Supabase error (update topic): {upd_t.error}")
+            else:
+                ins_t = (
+                    supabase.table("syllabus_topics")
+                    .insert({"unit_id": str(unit_id), "topic": topic.topic, "order_in_unit": index})
+                    .execute()
+                )
+                if getattr(ins_t, "error", None):
+                    raise HTTPException(status_code=500, detail=f"Supabase error (insert topic): {ins_t.error}")
+
+        # Delete topics that were removed from the unit
+        removed = sorted(existing_id_set - incoming_id_set)
+        _delete_topics_and_progress(removed)
+    else:
+        # Legacy client path: positional update to avoid wiping URL fields.
+        existing_pos_ids = [r.get("id") for r in existing_rows if r.get("id")]
+        keep_count = min(len(existing_pos_ids), len(incoming_topics))
+        for index in range(keep_count):
+            tid = existing_pos_ids[index]
+            topic = incoming_topics[index]
+            upd_t = (
+                supabase.table("syllabus_topics")
+                .update({"topic": topic.topic, "order_in_unit": index})
+                .eq("id", str(tid))
+                .eq("unit_id", str(unit_id))
+                .execute()
+            )
+            if getattr(upd_t, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (update topic): {upd_t.error}")
+
+        for index in range(keep_count, len(incoming_topics)):
+            topic = incoming_topics[index]
+            ins_t = (
+                supabase.table("syllabus_topics")
+                .insert({"unit_id": str(unit_id), "topic": topic.topic, "order_in_unit": index})
+                .execute()
+            )
+            if getattr(ins_t, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (insert topic): {ins_t.error}")
+
+        removed = existing_pos_ids[keep_count:]
+        _delete_topics_and_progress([str(tid) for tid in removed if tid])
 
     return load_unit_with_topics(unit_id)
 
@@ -9723,6 +10653,268 @@ def clear_topic_lab_url(topic_id: uuid.UUID):
     return _update_topic_url_field(topic_id, "lab_url", None)
 
 
+# ---------- Topic Ratings ----------
+
+class TopicRatingIn(BaseModel):
+    rating: int = Field(..., ge=1, le=3, description="Rating value from 1 to 3 stars")
+
+
+class TopicRatingOut(BaseModel):
+    topic_id: uuid.UUID
+    rating: int
+    updated_at: Optional[datetime] = None
+
+
+@academics_router.put(
+    "/api/syllabus/topics/{topic_id}/rating",
+    response_model=TopicRatingOut,
+    summary="Set or update rating for a syllabus topic (1-3 stars)",
+)
+def set_topic_rating(
+    topic_id: uuid.UUID,
+    payload: TopicRatingIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Upsert a rating for a single topic by the current teacher.
+
+    Rating must be between 1 and 3 (inclusive).
+    Requires authentication via Bearer token.
+    """
+    token = _parse_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Get user ID from token
+    supabase = get_service_client()
+    try:
+        user_res = supabase.auth.get_user(token)
+        user = getattr(user_res, "user", None)
+        if not user or not getattr(user, "id", None):
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        teacher_user_id = str(user.id)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Verify topic exists
+    topic_q = (
+        supabase.table("syllabus_topics")
+        .select("id")
+        .eq("id", str(topic_id))
+        .limit(1)
+        .execute()
+    )
+    if getattr(topic_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (find topic): {topic_q.error}")
+    if not topic_q.data:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    # Upsert rating (insert or update based on unique constraint)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    # Check if rating exists
+    existing = (
+        supabase.table("topic_ratings")
+        .select("id")
+        .eq("topic_id", str(topic_id))
+        .eq("teacher_user_id", teacher_user_id)
+        .limit(1)
+        .execute()
+    )
+    
+    if existing.data:
+        # Update existing rating
+        upd = (
+            supabase.table("topic_ratings")
+            .update({"rating": payload.rating, "updated_at": now_iso})
+            .eq("topic_id", str(topic_id))
+            .eq("teacher_user_id", teacher_user_id)
+            .execute()
+        )
+        if getattr(upd, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (update rating): {upd.error}")
+    else:
+        # Insert new rating
+        ins = (
+            supabase.table("topic_ratings")
+            .insert({
+                "topic_id": str(topic_id),
+                "teacher_user_id": teacher_user_id,
+                "rating": payload.rating,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            })
+            .execute()
+        )
+        if getattr(ins, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (insert rating): {ins.error}")
+
+    return TopicRatingOut(
+        topic_id=topic_id,
+        rating=payload.rating,
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+@academics_router.get(
+    "/api/syllabus/topics/{topic_id}/rating",
+    response_model=Optional[TopicRatingOut],
+    summary="Get current user's rating for a syllabus topic",
+)
+def get_topic_rating(
+    topic_id: uuid.UUID,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Get the current teacher's rating for a single topic.
+
+    Returns null if no rating exists.
+    Requires authentication via Bearer token.
+    """
+    token = _parse_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Get user ID from token
+    supabase = get_service_client()
+    try:
+        user_res = supabase.auth.get_user(token)
+        user = getattr(user_res, "user", None)
+        if not user or not getattr(user, "id", None):
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        teacher_user_id = str(user.id)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Get rating
+    rating_q = (
+        supabase.table("topic_ratings")
+        .select("topic_id,rating,updated_at")
+        .eq("topic_id", str(topic_id))
+        .eq("teacher_user_id", teacher_user_id)
+        .limit(1)
+        .execute()
+    )
+    if getattr(rating_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (get rating): {rating_q.error}")
+
+    if not rating_q.data:
+        return None
+
+    row = rating_q.data[0]
+    return TopicRatingOut(
+        topic_id=uuid.UUID(row["topic_id"]),
+        rating=int(row["rating"]),
+        updated_at=row.get("updated_at"),
+    )
+
+
+@academics_router.get(
+    "/api/syllabus/courses/{course_id}/ratings",
+    summary="Get all topic ratings for a course by current user",
+)
+def get_course_topic_ratings(
+    course_id: uuid.UUID,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Get all topic ratings for a course by the current teacher.
+
+    Returns a dict mapping topic_id to rating value.
+    Requires authentication via Bearer token.
+    """
+    token = _parse_bearer_token(authorization)
+    if not token:
+        return {"ratings": {}}
+
+    # Get user ID from token
+    supabase = get_service_client()
+    try:
+        user_res = supabase.auth.get_user(token)
+        user = getattr(user_res, "user", None)
+        if not user or not getattr(user, "id", None):
+            return {"ratings": {}}
+        teacher_user_id = str(user.id)
+    except Exception:
+        return {"ratings": {}}
+
+    # Get all unit IDs for this course
+    units_q = (
+        supabase.table("syllabus_units")
+        .select("id")
+        .eq("course_id", str(course_id))
+        .execute()
+    )
+    if getattr(units_q, "error", None) or not units_q.data:
+        return {"ratings": {}}
+
+    unit_ids = [u["id"] for u in units_q.data]
+
+    # Get all topic IDs for these units
+    topics_q = (
+        supabase.table("syllabus_topics")
+        .select("id")
+        .in_("unit_id", unit_ids)
+        .execute()
+    )
+    if getattr(topics_q, "error", None) or not topics_q.data:
+        return {"ratings": {}}
+
+    topic_ids = [t["id"] for t in topics_q.data]
+
+    # Get all ratings for these topics by this user
+    ratings_q = (
+        supabase.table("topic_ratings")
+        .select("topic_id,rating")
+        .eq("teacher_user_id", teacher_user_id)
+        .in_("topic_id", topic_ids)
+        .execute()
+    )
+    if getattr(ratings_q, "error", None):
+        return {"ratings": {}}
+
+    ratings = {r["topic_id"]: r["rating"] for r in (ratings_q.data or [])}
+    return {"ratings": ratings}
+
+
+@academics_router.post(
+    "/api/syllabus/topics/ratings/batch",
+    summary="Get ratings for multiple topics (public, for student view)",
+)
+def get_topic_ratings_batch(
+    topic_ids: List[uuid.UUID] = Body(..., embed=True),
+):
+    """Get ratings for a batch of topic IDs.
+
+    Returns a dict mapping topic_id to rating value.
+    Public endpoint - no authentication required.
+    Returns the first/only rating for each topic (since one staff per topic typically).
+    """
+    if not topic_ids:
+        return {"ratings": {}}
+
+    supabase = get_service_client()
+    
+    # Convert UUIDs to strings for query
+    topic_id_strs = [str(tid) for tid in topic_ids]
+    
+    # Get all ratings for these topics
+    ratings_q = (
+        supabase.table("topic_ratings")
+        .select("topic_id,rating")
+        .in_("topic_id", topic_id_strs)
+        .execute()
+    )
+    if getattr(ratings_q, "error", None):
+        return {"ratings": {}}
+
+    # Return first rating found for each topic
+    ratings = {}
+    for r in (ratings_q.data or []):
+        tid = r["topic_id"]
+        if tid not in ratings:
+            ratings[tid] = r["rating"]
+    
+    return {"ratings": ratings}
+
+
 # ---------- Progress tracking ----------
 
 class TopicToggleIn(BaseModel):
@@ -9746,6 +10938,150 @@ def toggle_topic(payload: TopicToggleIn, authorization: Optional[str] = Header(d
 def progress_summary(authorization: Optional[str] = Header(default=None)):
     token = _parse_bearer_token(authorization)
     return get_progress_summary(token)
+
+
+# ---------- Wishlist API ----------
+
+
+class WishlistToggleIn(BaseModel):
+    topic_id: uuid.UUID
+
+
+@academics_router.get("/api/wishlist", summary="Get user's wishlisted topics")
+def get_wishlist(authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    try:
+        q = supabase.table("user_topic_wishlist").select(
+            "id,topic_id,created_at,syllabus_topics(id,topic,unit_id,syllabus_units(id,unit_title,course_id,syllabus_courses(id,course_code,title)))"
+        ).eq("user_profile_id", profile_id).order("created_at", desc=True).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error fetching wishlist: {exc}")
+    if getattr(q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (wishlist): {q.error}")
+    items = []
+    for row in (q.data or []):
+        topic_data = row.get("syllabus_topics") or {}
+        unit_data = topic_data.get("syllabus_units") or {}
+        course_data = unit_data.get("syllabus_courses") or {}
+        items.append({
+            "id": row.get("id"),
+            "topic_id": row.get("topic_id"),
+            "topic_name": topic_data.get("topic"),
+            "unit_title": unit_data.get("unit_title"),
+            "course_code": course_data.get("course_code"),
+            "course_title": course_data.get("title"),
+            "created_at": row.get("created_at"),
+        })
+    return {"wishlist": items}
+
+
+@academics_router.post("/api/wishlist/toggle", summary="Add/remove topic from wishlist")
+def toggle_wishlist(payload: WishlistToggleIn, authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    topic_id_str = str(payload.topic_id)
+    # Check if already in wishlist
+    existing = supabase.table("user_topic_wishlist").select("id").eq(
+        "user_profile_id", profile_id
+    ).eq("topic_id", topic_id_str).limit(1).execute()
+    if existing.data:
+        # Remove from wishlist
+        supabase.table("user_topic_wishlist").delete().eq("id", existing.data[0]["id"]).execute()
+        return {"wishlisted": False, "message": "Removed from wishlist"}
+    else:
+        # Add to wishlist
+        try:
+            supabase.table("user_topic_wishlist").insert({
+                "user_profile_id": profile_id,
+                "topic_id": topic_id_str
+            }).execute()
+            return {"wishlisted": True, "message": "Added to wishlist"}
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "duplicate" in msg or "unique" in msg:
+                return {"wishlisted": True, "message": "Already in wishlist"}
+            raise HTTPException(status_code=500, detail=f"Error adding to wishlist: {exc}")
+
+
+@academics_router.delete("/api/wishlist/{topic_id}", summary="Remove topic from wishlist")
+def remove_from_wishlist(topic_id: uuid.UUID, authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    supabase.table("user_topic_wishlist").delete().eq(
+        "user_profile_id", profile_id
+    ).eq("topic_id", str(topic_id)).execute()
+    return {"message": "Removed from wishlist"}
+
+
+@academics_router.get("/api/wishlist/check/{topic_id}", summary="Check if topic is wishlisted")
+def check_wishlist(topic_id: uuid.UUID, authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    existing = supabase.table("user_topic_wishlist").select("id").eq(
+        "user_profile_id", profile_id
+    ).eq("topic_id", str(topic_id)).limit(1).execute()
+    return {"wishlisted": bool(existing.data)}
+
+
+# ---------- History API ----------
+
+
+class HistoryRecordIn(BaseModel):
+    topic_id: uuid.UUID
+    topic_name: str
+
+
+@academics_router.get("/api/history", summary="Get user's recently viewed topics")
+def get_history(
+    limit: int = Query(default=50, le=200),
+    authorization: Optional[str] = Header(default=None)
+):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    try:
+        q = supabase.table("user_topic_history").select(
+            "id,topic_id,topic_name,viewed_at"
+        ).eq("user_profile_id", profile_id).order("viewed_at", desc=True).limit(limit).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error fetching history: {exc}")
+    if getattr(q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (history): {q.error}")
+    return {"history": q.data or []}
+
+
+@academics_router.post("/api/history/record", summary="Record a topic view")
+def record_history(payload: HistoryRecordIn, authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    topic_id_str = str(payload.topic_id)
+    topic_name = (payload.topic_name or "").strip()[:500]  # Limit topic name length
+    try:
+        supabase.table("user_topic_history").insert({
+            "user_profile_id": profile_id,
+            "topic_id": topic_id_str,
+            "topic_name": topic_name
+        }).execute()
+        return {"recorded": True}
+    except Exception as exc:
+        # Log but don't fail - history is non-critical
+        supabase_logger.warning("Failed to record history: %s", exc)
+        return {"recorded": False}
+
+
+@academics_router.delete("/api/history/clear", summary="Clear user's history")
+def clear_history(authorization: Optional[str] = Header(default=None)):
+    token = _parse_bearer_token(authorization)
+    _, profile_id = _ensure_user_and_profile(token)
+    supabase = get_service_client()
+    supabase.table("user_topic_history").delete().eq("user_profile_id", profile_id).execute()
+    return {"message": "History cleared"}
 
 
 # ---------- Profile update & uploads ----------
@@ -13141,6 +14477,78 @@ def api_list_notes(variant: str = Query("detailed")):
         raise HTTPException(status_code=500, detail=f"Failed to list notes: {e}")
 
 
+@notes_router.get("/api/notes/topics/search", summary="Search AI notes topics for autocomplete")
+def api_search_topics(
+    q: str = Query("", min_length=0, max_length=120, description="Topic query string"),
+    limit: int = Query(12, ge=1, le=50),
+):
+    """Return topic suggestions from DB as the user types.
+
+    Uses Supabase service role client to query `ai_notes.title`.
+    Results are ranked to prefer starts-with matches, then contains matches.
+    """
+    query = (q or "").strip()
+    if not query:
+        return {"query": "", "items": []}
+
+    supabase = get_service_client()
+
+    def _fetch_starts():
+        return (
+            supabase.table("ai_notes")
+            .select("id,title")
+            .ilike("title", f"{query}%")
+            .order("title")
+            .limit(limit)
+            .execute()
+        )
+
+    def _fetch_contains():
+        return (
+            supabase.table("ai_notes")
+            .select("id,title")
+            .ilike("title", f"%{query}%")
+            .order("title")
+            .limit(max(50, limit * 4))
+            .execute()
+        )
+
+    try:
+        starts_res = _supabase_retry(_fetch_starts)
+        if getattr(starts_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (topic starts): {starts_res.error}")
+
+        contains_res = _supabase_retry(_fetch_contains)
+        if getattr(contains_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (topic contains): {contains_res.error}")
+
+        seen: Set[str] = set()
+        items: List[Dict[str, Any]] = []
+
+        def add_rows(rows: List[Dict[str, Any]]):
+            for row in rows or []:
+                topic = (row.get("title") or "").strip()
+                if not topic:
+                    continue
+                key = topic.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append({"id": row.get("id"), "topic": topic})
+                if len(items) >= limit:
+                    return
+
+        add_rows(getattr(starts_res, "data", []) or [])
+        if len(items) < limit:
+            add_rows(getattr(contains_res, "data", []) or [])
+
+        return {"query": query, "items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to search topics: {e}")
+
+
 @notes_router.post("/notes")
 @notes_router.post("/api/notes")
 def api_create_note(payload: dict, variant: str = Query("detailed")):
@@ -14968,6 +16376,14 @@ def _get_prev_milestone(current: int) -> int:
             return STREAK_MILESTONES[i]
     return 0
 
+def _compute_current_streak(active_dates, today: date) -> int:
+    streak = 0
+    day = today
+    while day in active_dates:
+        streak += 1
+        day = day - timedelta(days=1)
+    return streak
+
 @academics_router.get("/api/streak", response_model=StreakResponse, summary="Get user streak data")
 def get_user_streak(authorization: Optional[str] = Header(default=None)):
     token = _bearer_token_from_header(authorization)
@@ -15004,73 +16420,53 @@ def get_user_streak(authorization: Optional[str] = Header(default=None)):
         streak_data = new_streak
     else:
         streak_data = streak_q.data[0]
-        last_date_str = streak_data.get("last_activity_date")
-        
-        # Check if we need to update streak
-        if last_date_str:
+
+    # Pull recent activity logs to compute streak and week data
+    lookback_start = today - timedelta(days=400)
+    activity_q = supabase.table("notex_activity_logs").select("activity_date").eq("user_profile_id", profile_id).gte("activity_date", lookback_start.isoformat()).order("activity_date", desc=True).limit(400).execute()
+    active_dates = set()
+    for a in (activity_q.data or []):
+        if a.get("activity_date"):
             try:
-                last_date = date.fromisoformat(str(last_date_str))
-            except:
-                last_date = None
-            
-            if last_date:
-                if last_date == today:
-                    # Already visited today, no change needed
-                    pass
-                elif last_date == yesterday:
-                    # Continue streak
-                    new_current = streak_data.get("current_streak", 0) + 1
-                    new_longest = max(new_current, streak_data.get("longest_streak", 0))
-                    supabase.table("notex_streak").update({
-                        "current_streak": new_current,
-                        "longest_streak": new_longest,
-                        "last_activity_date": today.isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    }).eq("user_profile_id", profile_id).execute()
-                    streak_data["current_streak"] = new_current
-                    streak_data["longest_streak"] = new_longest
-                    streak_data["last_activity_date"] = today.isoformat()
-                else:
-                    # Streak broken, reset to 1
-                    supabase.table("notex_streak").update({
-                        "current_streak": 1,
-                        "last_activity_date": today.isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    }).eq("user_profile_id", profile_id).execute()
-                    streak_data["current_streak"] = 1
-                    streak_data["last_activity_date"] = today.isoformat()
-        else:
-            # No last activity, start fresh
-            supabase.table("notex_streak").update({
-                "current_streak": 1,
-                "last_activity_date": today.isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("user_profile_id", profile_id).execute()
-            streak_data["current_streak"] = 1
-            streak_data["last_activity_date"] = today.isoformat()
-    
-    current = streak_data.get("current_streak", 0)
-    longest = streak_data.get("longest_streak", 0)
-    
+                active_dates.add(date.fromisoformat(str(a["activity_date"])))
+            except Exception:
+                pass
+
+    # Backfill with stored last_activity_date if logs are missing
+    last_date = None
+    last_date_str = streak_data.get("last_activity_date")
+    if last_date_str:
+        try:
+            last_date = date.fromisoformat(str(last_date_str))
+            active_dates.add(last_date)
+        except Exception:
+            last_date = None
+
+    # Count this visit as activity so streak continues for today
+    active_dates.add(today)
+
+    current = _compute_current_streak(active_dates, today)
+    longest = max(int(streak_data.get("longest_streak") or 0), current)
+
+    if current != int(streak_data.get("current_streak") or 0) or (streak_data.get("last_activity_date") != today.isoformat()):
+        supabase.table("notex_streak").update({
+            "current_streak": current,
+            "longest_streak": longest,
+            "last_activity_date": today.isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("user_profile_id", profile_id).execute()
+        streak_data["current_streak"] = current
+        streak_data["longest_streak"] = longest
+        streak_data["last_activity_date"] = today.isoformat()
+
     # Calculate milestones
     next_m = _get_next_milestone(current)
     prev_m = _get_prev_milestone(current)
     range_val = next_m - prev_m
     progress = round(((current - prev_m) / range_val) * 100) if range_val > 0 else 0
-    
-    # Get activity logs for this week
-    week_start = today - timedelta(days=today.weekday())  # Monday
-    activity_q = supabase.table("notex_activity_logs").select("activity_date").eq("user_profile_id", profile_id).gte("activity_date", week_start.isoformat()).execute()
-    active_dates = set()
-    for a in (activity_q.data or []):
-        if a.get("activity_date"):
-            active_dates.add(str(a["activity_date"]))
-    
-    # Also include today if streak is active
-    if streak_data.get("last_activity_date") == today.isoformat():
-        active_dates.add(today.isoformat())
-    
+
     # Build week data
+    week_start = today - timedelta(days=today.weekday())  # Monday
     day_names = ["M", "T", "W", "T", "F", "S", "S"]
     today_index = today.weekday()
     week_data = []
@@ -15078,7 +16474,7 @@ def get_user_streak(authorization: Optional[str] = Header(default=None)):
         day_date = week_start + timedelta(days=i)
         is_today = i == today_index
         is_future = i > today_index
-        is_active = day_date.isoformat() in active_dates
+        is_active = day_date in active_dates
         week_data.append({
             "day": day_names[i],
             "date": day_date.day,
@@ -15086,7 +16482,7 @@ def get_user_streak(authorization: Optional[str] = Header(default=None)):
             "is_active": is_active,
             "is_future": is_future
         })
-    
+
     days_completed = len([d for d in week_data if d["is_active"]])
     
     return StreakResponse(
@@ -15150,6 +16546,11 @@ def create_app() -> FastAPI:
             "https://www.paperx.tech",
             "https://lionfish-app-ynu29.ondigitalocean.app",
             "https://uppzpkmpxgyipjzcskva.supabase.co",
+            "http://127.0.0.1:5500",
+            "http://127.0.0.1:8000",
+            "http://localhost:5500",
+            "http://localhost:8000",
+            "http://localhost",
         ],
         allow_credentials=True,
         allow_methods=["*"],
@@ -15166,24 +16567,29 @@ def create_app() -> FastAPI:
     app.include_router(youtube_transcript_router)
     app.include_router(youtube_search_router)
     app.include_router(yt_transcript_router, prefix="/api/youtube", tags=["youtube transcripts (raw)"])
+    app.include_router(tunex_router.router)
 
     # Simple request logger to aid debugging 405/OPTIONS/CORS issues
     @app.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[override]
+        # Use only path (no query params) and truncate if too long
+        path = request.url.path
+        if len(path) > 60:
+            path = path[:57] + "..."
         try:
-            print(f"[REQ] {request.method} {request.url.path} origin={request.headers.get('origin')}")
+            print(f"[REQ] {request.method} {path}")
         except Exception:
             pass
         try:
             response = await call_next(request)
         except Exception as e:
             try:
-                print(f"[ERR] {request.method} {request.url.path} -> {e}")
+                print(f"[ERR] {request.method} {path} -> {e}")
             except Exception:
                 pass
             raise
         try:
-            print(f"[RES] {request.method} {request.url.path} {response.status_code}")
+            print(f"[RES] {request.method} {path} {response.status_code}")
         except Exception:
             pass
         return response
@@ -15558,7 +16964,482 @@ async def analytics_dashboard_metrics():
 
 app.include_router(analytics_router)
 
+# -------------------- Lcoding Learning Tracks --------------------
+
+class LcodingLanguageBase(BaseModel):
+    name: str
+    # slug removed
+    description: Optional[str] = None
+    logo_url: Optional[str] = None
+
+class LcodingLanguageCreate(LcodingLanguageBase):
+    pass
+
+class LcodingLanguage(LcodingLanguageBase):
+    id: str
+    created_at: str
+    updated_at: str
+
+    class Config:
+        orm_mode = True
+
+class LcodingLevelBase(BaseModel):
+    title: str
+    order_index: int = 0
+
+class LcodingLevelCreate(LcodingLevelBase):
+    pass
+
+class LcodingLevel(LcodingLevelBase):
+    id: str
+    language_id: str
+    created_at: str
+    updated_at: str
+
+class LcodingSectionBase(BaseModel):
+    title: str
+    order_index: int = 0
+
+class LcodingSectionCreate(LcodingSectionBase):
+    pass
+
+class LcodingSection(LcodingSectionBase):
+    id: str
+    level_id: str
+    created_at: str
+    updated_at: str
+
+class LcodingTopicBase(BaseModel):
+    title: str
+    order_index: int = 0
+
+class LcodingTopicCreate(LcodingTopicBase):
+    pass
+
+class LcodingTopic(LcodingTopicBase):
+    id: str
+    section_id: str
+    created_at: str
+    updated_at: str
+
+
+
+class LcodingTopicUpdate(BaseModel):
+    title: Optional[str] = None
+    order_index: Optional[int] = None
+
+lcoding_router = APIRouter(prefix="/api/lcoding", tags=["lcoding"])
+
+@lcoding_router.get("/languages", response_model=List[LcodingLanguage])
+def get_lcoding_languages():
+    supabase = get_service_client()
+    res = supabase.table("lcoding_languages").select("*").order("name").execute()
+    return res.data or []
+
+@lcoding_router.post("/languages", response_model=LcodingLanguage)
+async def create_lcoding_language(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    logo: Optional[UploadFile] = File(None)
+):
+    supabase = get_service_client()
+    
+    logo_url = None
+    if logo:
+        try:
+            file_content = await logo.read()
+            file_ext = logo.filename.split(".")[-1] if "." in logo.filename else "png"
+            file_name = f"lcoding-logos/{uuid.uuid4()}.{file_ext}"
+            
+            # Upload to 'tunex' bucket
+            res = supabase.storage.from_("tunex").upload(
+                path=file_name,
+                file=file_content,
+                file_options={"content-type": logo.content_type}
+            )
+            
+            # Get public URL
+            logo_url = supabase.storage.from_("tunex").get_public_url(file_name)
+        except Exception as e:
+            print(f"Logo upload failed: {e}")
+            
+    payload = {
+        "name": name,
+        "description": description,
+        "logo_url": logo_url,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+    
+    res = supabase.table("lcoding_languages").insert(payload).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create language")
+    return res.data[0]
+
+@lcoding_router.put("/languages/{lang_id}", response_model=LcodingLanguage)
+async def update_lcoding_language(
+    lang_id: str,
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    logo: Optional[UploadFile] = File(None)
+):
+    supabase = get_service_client()
+    
+    existing = supabase.table("lcoding_languages").select("id, logo_url").eq("id", lang_id).single().execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Language not found")
+
+    payload = {
+        "name": name,
+        "description": description,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    if logo:
+        try:
+            file_content = await logo.read()
+            file_ext = logo.filename.split(".")[-1] if "." in logo.filename else "png"
+            file_name = f"lcoding-logos/{uuid.uuid4()}.{file_ext}"
+            
+            res = supabase.storage.from_("tunex").upload(
+                path=file_name,
+                file=file_content,
+                file_options={"content-type": logo.content_type}
+            )
+            logo_url = supabase.storage.from_("tunex").get_public_url(file_name)
+            payload["logo_url"] = logo_url
+        except Exception as e:
+            print(f"Logo upload failed: {e}")
+            
+    res = supabase.table("lcoding_languages").update(payload).eq("id", lang_id).execute()
+    if not res.data:
+         raise HTTPException(status_code=500, detail="Failed to update language")
+    return res.data[0]
+
+@lcoding_router.get("/languages/{lang_id}", response_model=LcodingLanguage)
+def get_lcoding_language(lang_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_languages").select("*").eq("id", lang_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Language not found")
+    return res.data
+
+# --- Levels ---
+
+@lcoding_router.get("/languages/{lang_id}/levels", response_model=List[LcodingLevel])
+def get_lcoding_levels(lang_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_levels").select("*").eq("language_id", lang_id).order("order_index").execute()
+    return res.data or []
+
+@lcoding_router.post("/languages/{lang_id}/levels", response_model=LcodingLevel)
+def create_lcoding_level(lang_id: str, level: LcodingLevelCreate):
+    supabase = get_service_client()
+    payload = level.dict()
+    payload["language_id"] = lang_id
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    res = supabase.table("lcoding_levels").insert(payload).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create level")
+    return res.data[0]
+    
+@lcoding_router.get("/levels/{level_id}", response_model=LcodingLevel)
+def get_lcoding_level(level_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_levels").select("*").eq("id", level_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Level not found")
+    return res.data
+
+@lcoding_router.put("/levels/{level_id}", response_model=LcodingLevel)
+def update_lcoding_level(level_id: str, level: LcodingLevelCreate):
+    supabase = get_service_client()
+    payload = level.dict()
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    # Ensure we don't accidentally wipe out language_id if pydantic excludes it, 
+    # but since it's an update, Supabase handles partials for us if we sent them, 
+    # but here we are sending full payload. Ideally we only update what changed.
+    # LcodingLevelCreate has title and order_index.
+    
+    res = supabase.table("lcoding_levels").update(payload).eq("id", level_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to update level")
+    return res.data[0]
+
+@lcoding_router.delete("/levels/{level_id}")
+def delete_lcoding_level(level_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_levels").delete().eq("id", level_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Level not found or failed to delete")
+    return {"message": "Level deleted successfully"}
+
+# --- Sections (now under Levels) ---
+
+@lcoding_router.get("/levels/{level_id}/sections", response_model=List[LcodingSection])
+def get_lcoding_sections(level_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_sections").select("*").eq("level_id", level_id).order("order_index").execute()
+    return res.data or []
+
+@lcoding_router.post("/levels/{level_id}/sections", response_model=LcodingSection)
+def create_lcoding_section(level_id: str, section: LcodingSectionCreate):
+    supabase = get_service_client()
+    payload = section.dict()
+    payload["level_id"] = level_id
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    res = supabase.table("lcoding_sections").insert(payload).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create section")
+    return res.data[0]
+
+@lcoding_router.get("/sections/{section_id}", response_model=LcodingSection)
+def get_lcoding_section(section_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_sections").select("*").eq("id", section_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Section not found")
+    return res.data
+
+@lcoding_router.get("/sections/{section_id}/topics", response_model=List[LcodingTopic])
+def get_lcoding_topics(section_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_topics").select("*").eq("section_id", section_id).order("order_index").execute()
+    return res.data or []
+
+@lcoding_router.post("/sections/{section_id}/topics", response_model=LcodingTopic)
+def create_lcoding_topic(section_id: str, topic: LcodingTopicCreate):
+    supabase = get_service_client()
+    payload = topic.dict()
+    payload["section_id"] = section_id
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    res = supabase.table("lcoding_topics").insert(payload).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Failed to create topic")
+    return res.data[0]
+
+@lcoding_router.get("/topics/{topic_id}", response_model=LcodingTopic)
+def get_lcoding_topic(topic_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_topics").select("*").eq("id", topic_id).single().execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return res.data
+
+@lcoding_router.patch("/topics/{topic_id}", response_model=LcodingTopic)
+def update_lcoding_topic(topic_id: str, topic: LcodingTopicUpdate):
+    supabase = get_service_client()
+    payload = topic.dict(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    res = supabase.table("lcoding_topics").update(payload).eq("id", topic_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Topic not found or failed to update")
+    return res.data[0]
+
+@lcoding_router.delete("/topics/{topic_id}")
+def delete_lcoding_topic(topic_id: str):
+    supabase = get_service_client()
+    res = supabase.table("lcoding_topics").delete().eq("id", topic_id).execute()
+    # Note: Supabase delete returns the deleted rows. If empty, it might mean not found OR already deleted.
+    if not res.data:
+         # Check if it existed? Or just return success.
+         # For safety, let's assume if it returns nothing, it wasn't there.
+         raise HTTPException(status_code=404, detail="Topic not found or failed to delete")
+    return {"message": "Topic deleted successfully"}
+
+app.include_router(lcoding_router)
+app.include_router(problems_api.router) # Problem Solver Routes
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
+# ... (existing code)
+
+# --- Python Compiler Endpoint ---
+from packages.python_compiler import execute_python_code
+from packages.java_compiler import execute_java_code
+
+class CompilerRequest(BaseModel):
+    code: str
+
+@app.post("/api/tunex/compiler/run")
+async def run_python_compiler(request: CompilerRequest):
+    """
+    Executes python code sent from the frontend.
+    """
+    result = execute_python_code(request.code)
+    return result
+
+
+@app.post("/api/tunex/compiler/java/run")
+async def run_java_compiler(request: CompilerRequest):
+    """Compiles and runs Java code sent from the frontend."""
+    result = execute_java_code(request.code)
+    return result
+
+# ------------------------------------------------------------------------------
+# Blink Generation Endpoint (Gemini 3 Pro + Supabase)
+# ------------------------------------------------------------------------------
+
+class BlinkRequest(BaseModel):
+    topic: Optional[str] = None
+    topic_id: Optional[str] = None
+    note_content: Optional[str] = None # Optional override
+
+@app.get("/api/blink/links")
+async def get_blink_links(topics: str = Query(..., description="Comma-separated list of topic names")):
+    """
+    Fetch existing blink links for given topic names.
+    Returns a map of topic_name -> blink_link for topics that have blinks.
+    """
+    supabase = get_service_client()
+    topics_list = [t.strip().lower() for t in topics.split(",") if t.strip()]
+    
+    if not topics_list:
+        return {"links": {}}
+    
+    try:
+        res = supabase.table(AI_NOTES_TABLE).select("title, title_ci, blink_link").in_("title_ci", topics_list).execute()
+        data = getattr(res, 'data', []) or []
+        
+        links = {}
+        for row in data:
+            blink_link = row.get("blink_link")
+            if blink_link and blink_link.strip():
+                # Use original title as key for better matching
+                links[row.get("title_ci") or row.get("title", "").lower()] = blink_link
+        
+        return {"links": links}
+    except Exception as e:
+        print(f"[Blink] Error fetching links: {e}")
+        return {"links": {}}
+
+@app.post("/api/blink/generate")
+async def generate_blink_endpoint(
+    req: BlinkRequest, 
+    user_id: str = "00000000-0000-0000-0000-000000000000" 
+):
+    """
+    Generate a 'Blink' (landscape illustration) for a given topic or note content.
+    """
+    
+    # 1. Get content
+    content_to_illustrate = req.note_content
+    
+    # If content not provided directly, try to fetch from DB
+    if not content_to_illustrate and (req.topic or req.topic_id):
+        supabase = get_service_client()
+        try:
+            # Attempt 1: Try by ID if provided
+            data = []
+            if req.topic_id:
+                print(f"[Blink] Looking up note by ID: {req.topic_id}")
+                res = supabase.table(AI_NOTES_TABLE).select("markdown, id").eq("id", req.topic_id).limit(1).execute()
+                data = getattr(res, 'data', [])
+            
+            # Attempt 2: If no data yet and topic provided, try by title
+            if not data and req.topic:
+                print(f"[Blink] No note found by ID or no ID. Looking up by title: {req.topic}")
+                res = supabase.table(AI_NOTES_TABLE).select("markdown, id").eq("title_ci", req.topic.strip().lower()).limit(1).execute()
+                data = getattr(res, 'data', [])
+
+            if data:
+                content_to_illustrate = data[0].get("markdown", "")
+                # If we found it by title but didn't have the ID (or it differed), update req.topic_id so we update the correct row later
+                real_id = data[0].get("id")
+                if real_id:
+                     req.topic_id = real_id
+            else:
+                print("[Blink] Note not found in DB.")
+        except Exception as e:
+            print(f"Error fetching note: {e}")
+
+    if not content_to_illustrate:
+         raise HTTPException(status_code=404, detail="Note content not found for this topic. Please generate notes first.")
+
+    # 2. Generate Image
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured.")
+        
+    if genai is None:
+         # raise HTTPException(status_code=500, detail="google-genai library not installed.")
+         print("Warning: google-genai not imported. Simulating or failing.")
+
+    prompt = f"""now,create me an one landscape illustration for the below notes so that just by looking this one illustration, they can understand the entire notes completely i want the ilustratio to be professional and white bg, content ={content_to_illustrate[:8000]}"""  
+
+    print(f"Generating Blink for topic '{req.topic or req.topic_id}'...")
+    
+    try:
+        def _generate_bytes_sync():
+            # Check if genai is available
+            if not genai:
+                raise RuntimeError("google-genai library not available")
+
+            client_g = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            
+            # Using user-provided structure specifically:
+            chat = client_g.chats.create(
+                model="gemini-3-pro-image-preview", 
+                config=types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE'],
+                    tools=[{"google_search": {}}]
+                )
+            )
+
+            resp = chat.send_message(prompt,
+                config=types.GenerateContentConfig(
+                    image_config=types.ImageConfig(
+                        aspect_ratio="16:9",
+                        image_size="2K"
+                    ),
+            ))
+            
+            for part in resp.parts:
+                if part.as_image():
+                    return part.as_image().image_bytes
+                elif part.text:
+                    print(f"[Blink] Model returned text: {part.text}")
+            
+            raise RuntimeError(f"No image part in response. Response text: {resp.text if hasattr(resp, 'text') else 'Unknown'}")
+
+        image_bytes = await run_in_threadpool(_generate_bytes_sync)
+        
+        # 3. Upload to Supabase
+        filename = f"gen_blink_{uuid.uuid4().hex[:8]}.png"
+        bucket_name = "blink"
+        
+        supabase = get_service_client()
+        
+        def _upload_sync():
+            res = supabase.storage.from_(bucket_name).upload(
+                path=filename,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+            pub = supabase.storage.from_(bucket_name).get_public_url(filename)
+            return pub
+
+        public_url = await run_in_threadpool(_upload_sync)
+        
+        # 4. Update DB
+        if req.topic_id:
+             supabase.table(AI_NOTES_TABLE).update({"blink_link": public_url}).eq("id", req.topic_id).execute()
+        
+        return {
+            "success": True,
+            "url": public_url,
+            "filename": filename
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+

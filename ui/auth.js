@@ -26,7 +26,7 @@
  *    or call window.__PX_NAV_APPLY(profile) afterwards.
  */
 (function() {
-  const API = (window.API_BASE || 'https://paperxapp.onrender.com').replace(/\/$/, '');
+  const API = (window.API_BASE || 'http://localhost:8000').replace(/\/$/, '');
   const USER_TOKEN_KEY = 'px_token';
   const TEACHER_TOKEN_KEY = 'teacherToken';
   const REFRESH_TOKEN_KEY = 'px_refresh_token';
@@ -112,7 +112,7 @@
       var i = p.indexOf('/ui/');
       if (i >= 0) return p.slice(0, i + 4); // include '/ui/'
     } catch(_){ }
-    return '/';
+    return '/ui/';
   }
 
   function deriveInitials(name){

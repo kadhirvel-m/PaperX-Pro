@@ -1,5 +1,4 @@
 import os
-import shutil
 import re
 import html
 import unicodedata
@@ -244,9 +243,30 @@ def prefer_language_candidates(preferred_langs: List[str]) -> List[str]:
             expanded.append(fb)
     return expanded
 
+def _convert_transcript_to_dicts(transcript_list) -> List[dict]:
+    """Convert FetchedTranscriptSnippet objects to dicts for backwards compatibility."""
+    result = []
+    for item in transcript_list:
+        # Handle both new FetchedTranscriptSnippet objects and old dicts
+        if hasattr(item, 'text'):
+            result.append({
+                "text": item.text,
+                "start": item.start,
+                "duration": item.duration,
+            })
+        elif isinstance(item, dict):
+            result.append(item)
+        else:
+            # Fallback: try to convert to dict
+            result.append(dict(item))
+    return result
+
+
 def try_youtube_transcript_api(video_id: str, langs: List[str]) -> Tuple[Optional[List[dict]], Optional[str]]:
     try:
-        listing = YouTubeTranscriptApi.list_transcripts(video_id)
+        # youtube-transcript-api v1.2+ requires instantiation
+        ytt = YouTubeTranscriptApi()
+        listing = ytt.list(video_id)
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
         return None, None
     except Exception:
@@ -255,12 +275,12 @@ def try_youtube_transcript_api(video_id: str, langs: List[str]) -> Tuple[Optiona
     for lang in prefer_language_candidates(langs):
         try:
             tr = listing.find_manually_created_transcript([lang])
-            return tr.fetch(), tr.language_code
+            return _convert_transcript_to_dicts(tr.fetch()), tr.language_code
         except Exception:
             pass
         try:
             tr = listing.find_generated_transcript([lang])
-            return tr.fetch(), tr.language_code
+            return _convert_transcript_to_dicts(tr.fetch()), tr.language_code
         except Exception:
             pass
 
@@ -270,7 +290,7 @@ def try_youtube_transcript_api(video_id: str, langs: List[str]) -> Tuple[Optiona
             if tr.is_translatable:
                 for lang in prefer_language_candidates(langs):
                     try:
-                        return tr.translate(lang).fetch(), lang
+                        return _convert_transcript_to_dicts(tr.translate(lang).fetch()), lang
                     except Exception:
                         continue
         except Exception:
@@ -278,7 +298,7 @@ def try_youtube_transcript_api(video_id: str, langs: List[str]) -> Tuple[Optiona
 
     try:
         first = next(iter(listing))
-        return first.fetch(), first.language_code
+        return _convert_transcript_to_dicts(first.fetch()), first.language_code
     except Exception:
         return None, None
 
@@ -421,14 +441,7 @@ def render_paragraph(transcript: List[dict]) -> str:
 # ---------------------------------------------------------------------
 # Optional Whisper fallback
 # ---------------------------------------------------------------------
-WHISPER_ENABLED = os.getenv("ENABLE_WHISPER", "false").strip().lower() in {"1", "true", "yes", "on"}
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "tiny").strip() or "tiny"
-
-
 def transcribe_with_whisper(video_id: str, lang_hint: Optional[str] = None) -> str:
-    if not WHISPER_ENABLED:
-        raise HTTPException(501, "Whisper transcription disabled (set ENABLE_WHISPER=true to enable).")
-
     try:
         import whisper  # pip install openai-whisper; requires ffmpeg
     except Exception as e:
@@ -454,34 +467,12 @@ def transcribe_with_whisper(video_id: str, lang_hint: Optional[str] = None) -> s
         if not os.path.exists(audio_path):
             audio_path = base
 
-    # Choose a small default to stay under tight memory limits (Render free tier is 512MB).
-    model_name = WHISPER_MODEL_NAME.lower()
-    if model_name not in {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3"}:
-        model_name = "tiny"
-
-    model = whisper.load_model(model_name)
+    model = whisper.load_model("small")
     kw = {}
     if lang_hint:
         kw["language"] = lang_hint.split("-")[0]
     result = model.transcribe(audio_path, **kw)
     text = (result.get("text") or "").strip()
-
-    # Best-effort memory cleanup for constrained environments
-    try:
-        import torch  # type: ignore
-
-        if hasattr(model, "to"):
-            model.to("cpu")
-        del model
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
-
-    try:
-        shutil.rmtree(tmp, ignore_errors=True)
-    except Exception:
-        pass
-
     return compact_repetitions(text)
 
 #how to use use this

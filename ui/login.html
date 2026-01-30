@@ -483,7 +483,7 @@
       closeMenu();
     })();
 
-    const apiBase = (window.API_BASE || 'https://paperxapp.onrender.com').replace(/\/$/, '');
+    const apiBase = (window.API_BASE || 'http://localhost:8000').replace(/\/$/, '');
     const togglePwd = document.getElementById('togglePwd');
     togglePwd?.addEventListener('click', () => {
       const pwd = document.getElementById('pwd');

@@ -368,11 +368,11 @@
 
     <script>
         // API base
-        let __defaultBase = 'https://paperxapp.onrender.com';
+        let __defaultBase = 'http://localhost:8000';
         if (/^https?:/i.test(window.location.origin)) {
             const host = window.location.host;
             if (/localhost:5500|127\.0\.0\.1:5500/.test(host)) {
-                __defaultBase = 'https://paperxapp.onrender.com';
+                __defaultBase = 'http://localhost:8000';
             } else {
                 __defaultBase = window.location.origin;
             }

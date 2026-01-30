@@ -26,40 +26,41 @@
     })();
   </script>
 
-  <!-- Tailwind + plugins -->
+  <!-- Tailwind (local build) + plugins -->
   <link rel="stylesheet" href="assets/css/tailwind.css" />
-  <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="assets/js/analytics-tracker.js"></script>
   <script>
-    // Use the same palette + mode behavior as other PaperX pages
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
-          },
-          colors: {
-            brand: { 900: '#1E1E2F', 700: '#4C2A59', 500: '#9E4B8A' },
-            brandlt: { 50: '#FAF5FB', 100: '#F3E7F2', 200: '#E7D0E4', 300: '#D9B4D3', 400: '#C88DBA', 500: '#9E4B8A', 700: '#4C2A59', 900: '#1E1E2F' },
-            surface: { DEFAULT: 'var(--surface)', dim: 'var(--surface-dim)', contrast: 'var(--surface-contrast)' }
-          },
-          boxShadow: {
-            glow: '0 8px 30px rgba(158,75,138,0.35)',
-            neon: '0 0 25px rgba(158,75,138,.35), 0 0 60px rgba(158,75,138,.25)',
-            'e1': '0 1px 2px rgba(0,0,0,0.06)',
-            'e2': '0 2px 6px rgba(0,0,0,0.08)',
-            'e3': '0 6px 12px rgba(0,0,0,0.10)',
-            'e4': '0 10px 16px rgba(0,0,0,0.12)'
-          },
-          keyframes: {
-            in: { '0%': { opacity: 0, transform: 'translateY(6px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
-            pulsebar: { '0%': { width: '8%' }, '50%': { width: '55%' }, '100%': { width: '92%' } },
-            shimmer: { '0%': { backgroundPosition: '-468px 0' }, '100%': { backgroundPosition: '468px 0' } }
-          },
-          animation: { in: 'in .25s ease-out', pulsebar: 'pulsebar 1.8s ease-in-out infinite', shimmer: 'shimmer 1.25s linear infinite' }
+    // Use the same palette + mode behavior as other PaperX pages when CDN dev build is present
+    if (window.tailwind) {
+      window.tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+            },
+            colors: {
+              brand: { 900: '#1E1E2F', 700: '#4C2A59', 500: '#9E4B8A' },
+              brandlt: { 50: '#FAF5FB', 100: '#F3E7F2', 200: '#E7D0E4', 300: '#D9B4D3', 400: '#C88DBA', 500: '#9E4B8A', 700: '#4C2A59', 900: '#1E1E2F' },
+              surface: { DEFAULT: 'var(--surface)', dim: 'var(--surface-dim)', contrast: 'var(--surface-contrast)' }
+            },
+            boxShadow: {
+              glow: '0 8px 30px rgba(158,75,138,0.35)',
+              neon: '0 0 25px rgba(158,75,138,.35), 0 0 60px rgba(158,75,138,.25)',
+              'e1': '0 1px 2px rgba(0,0,0,0.06)',
+              'e2': '0 2px 6px rgba(0,0,0,0.08)',
+              'e3': '0 6px 12px rgba(0,0,0,0.10)',
+              'e4': '0 10px 16px rgba(0,0,0,0.12)'
+            },
+            keyframes: {
+              in: { '0%': { opacity: 0, transform: 'translateY(6px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
+              pulsebar: { '0%': { width: '8%' }, '50%': { width: '55%' }, '100%': { width: '92%' } },
+              shimmer: { '0%': { backgroundPosition: '-468px 0' }, '100%': { backgroundPosition: '468px 0' } }
+            },
+            animation: { in: 'in .25s ease-out', pulsebar: 'pulsebar 1.8s ease-in-out infinite', shimmer: 'shimmer 1.25s linear infinite' }
+          }
         }
-      }
+      };
     }
   </script>
 
@@ -80,7 +81,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- KaTeX for math rendering -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -89,6 +90,11 @@
   <script type="module" src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.8.5/dist/dotlottie-wc.js"></script>
 
   <style>
+    /* Role-gating: keep elements hidden unless privileged, without fighting Tailwind responsive classes */
+    .px-privilege-hidden {
+      display: none !important;
+    }
+
     :root {
       /* PaperX light tokens */
       --surface: #ffffff;
@@ -470,6 +476,14 @@
 
     /* Mobile adjustments: reduce Related Videos height */
     @media (max-width: 640px) {
+
+      /* Mobile-only: hide emphasis/fullscreen controls completely */
+      #emphBtn,
+      #expandBtn,
+      #fsControls {
+        display: none !important;
+      }
+
       .yt-card {
         flex: 0 0 200px;
       }
@@ -543,11 +557,14 @@
             class="ripple hidden px-3 py-2 rounded-full bg-brand-500 text-white text-sm font-semibold shadow-glow transition disabled:opacity-60 disabled:cursor-not-allowed"
             disabled aria-disabled="true">MCQ</button>
           <button id="densityBtn"
-            class="ripple px-3 py-2 rounded-full border text-sm hover:bg-brandlt-100 dark:hover:bg-white/10 transition"
+            class="ripple hidden sm:inline-flex px-3 py-2 rounded-full border text-sm hover:bg-brandlt-100 dark:hover:bg-white/10 transition"
             style="border-color: var(--outline)" title="Toggle density">Density</button>
           <button id="themeBtn"
-            class="ripple px-3 py-2 rounded-full border text-sm hover:bg-brandlt-100 dark:hover:bg-white/10 transition"
-            style="border-color: var(--outline)" title="Toggle theme">Theme</button>
+            class="ripple inline-flex items-center gap-2 px-3 py-2 rounded-full border text-sm hover:bg-brandlt-100 dark:hover:bg-white/10 transition"
+            style="border-color: var(--outline)" title="Toggle theme">
+            <span id="themeIcon" class="material-symbols-rounded text-base">dark_mode</span>
+            <span id="themeText" class="hidden sm:inline">Theme</span>
+          </button>
         </div>
       </div>
     </div>
@@ -557,16 +574,17 @@
   <section id="relatedVideosSection" class="max-w-7xl mx-auto px-4 sm:px-6 mt-6 hidden">
     <div class="rounded-2xl glass border shadow-glow"
       style="border-color: var(--outline); background: color-mix(in oklab, var(--surface) 78%, transparent);">
-      <div class="flex items-center justify-between gap-3 px-6 py-5 border-b flex-wrap"
+      <div class="flex items-center justify-between gap-3 px-6 py-4 border-b flex-nowrap"
         style="border-color: var(--outline)">
         <div class="min-w-0">
-          <h2 class="text-base sm:text-lg font-semibold tracking-tight">Related YouTube Videos</h2>
-          <p id="relatedVideosSummary" class="text-xs sm:text-sm text-[var(--muted)]">Enter a topic to discover
+          <h2 class="text-base sm:text-lg font-semibold tracking-tight">Related Video</h2>
+          <p id="relatedVideosSummary" class="hidden sm:block text-xs sm:text-sm text-[var(--muted)]">Enter a topic to
+            discover
             supporting videos.</p>
         </div>
         <div class="flex items-center gap-3 shrink-0">
           <select id="videoLanguageSelect"
-            class="rounded-xl border px-3 py-2 text-sm font-medium bg-transparent text-current focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)] transition"
+            class="rounded-xl border px-2 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium bg-transparent text-current focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)] transition"
             style="border-color: var(--outline)" aria-label="Select video language">
             <option value="English">English</option>
             <option value="Tamil">Tamil</option>
@@ -575,9 +593,9 @@
             <option value="Malayalam">Malayalam</option>
           </select>
           <button id="refreshVideosBtn"
-            class="ripple inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium hover:bg-[var(--brand-soft)] transition shrink-0"
+            class="ripple inline-flex items-center gap-1.5 rounded-xl border px-2 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium hover:bg-[var(--brand-soft)] transition shrink-0"
             style="border-color: var(--outline)">
-            <span class="material-symbols-outlined text-base">refresh</span>
+            <span class="material-symbols-outlined text-sm sm:text-base">refresh</span>
             Refresh
           </button>
         </div>
@@ -606,7 +624,7 @@
     <aside class="space-y-4 lg:col-span-3">
 
       <!-- Input Card -->
-      <section class="rounded-2xl glass p-4 sm:p-5 border shadow-glow animate-in"
+      <section class="hidden sm:block rounded-2xl glass p-4 sm:p-5 border shadow-glow animate-in"
         style="border-color: var(--outline); background: color-mix(in oklab, var(--surface) 75%, transparent)">
         <div class="">
           <label class="block text-sm font-medium mb-2 hidden sm:block">Topic</label>
@@ -722,13 +740,17 @@
             class="ripple px-3 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-600 text-white text-sm hidden">Save</button>
           <button id="myNoteBtn" class="ripple px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)] hidden"
             style="border-color: var(--outline)">My note</button>
-          <button id="editToggle" class="ripple px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
+          <button id="editToggle"
+            class="ripple hidden sm:inline-flex px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
             style="border-color: var(--outline)">Edit</button>
-          <button id="downloadBtn" class="ripple px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
+          <button id="downloadBtn"
+            class="ripple hidden sm:inline-flex px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
             style="border-color: var(--outline)">Download</button>
-          <button id="emphBtn" class="ripple px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
+          <button id="emphBtn"
+            class="ripple hidden sm:inline-flex px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
             style="border-color: var(--outline)">Emphasis</button>
-          <button id="expandBtn" class="ripple px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
+          <button id="expandBtn"
+            class="ripple hidden sm:inline-flex px-3 py-2 rounded-lg border text-sm hover:bg-[var(--brand-soft)]"
             style="border-color: var(--outline)">Fullscreen</button>
         </div>
 
@@ -953,11 +975,11 @@
     marked.use({ gfm: true, breaks: true, mangle: false, headerIds: true });
 
     // Central API base (supports file:// open or custom API_BASE)
-    let __defaultBase = 'https://paperxapp.onrender.com';
+    let __defaultBase = 'http://localhost:8000';
     if (/^https?:/i.test(window.location.origin)) {
       const host = window.location.host;
       if (/localhost:5500|127\.0\.0\.1:5500/.test(host)) {
-        __defaultBase = 'https://paperxapp.onrender.com';
+        __defaultBase = 'http://localhost:8000';
       } else {
         __defaultBase = window.location.origin;
       }
@@ -1000,6 +1022,8 @@
     const $domainsHint = document.getElementById('domainsHint');
     const $snack = document.getElementById('snack');
     const $themeBtn = document.getElementById('themeBtn');
+    const $themeIcon = document.getElementById('themeIcon');
+    const $themeText = document.getElementById('themeText');
     const $densityBtn = document.getElementById('densityBtn');
     const $fsCtrl = document.getElementById('fsControls');
     const $fsExit = document.getElementById('fsExitBtn');
@@ -1276,10 +1300,63 @@
 
     // ===== User auth token helper =====
     function getAuthToken() {
-      try {
-        return localStorage.getItem('teacherToken') || localStorage.getItem('px_token') || '';
-      } catch { return ''; }
+      const keys = ['teacherToken', 'px_token', 'userToken', 'sb-access-token', 'supabase.auth.token'];
+      for (const k of keys) {
+        try {
+          const v = localStorage.getItem(k);
+          if (v) return v;
+        } catch { /* ignore */ }
+      }
+      return '';
     }
+
+    // ===== Role-gated actions (admin / employee only) =====
+    (function () {
+      const privilegedEls = [
+        (typeof $regen !== 'undefined' ? $regen : null),
+        (typeof $regenMobile !== 'undefined' ? $regenMobile : null),
+        (typeof $editToggle !== 'undefined' ? $editToggle : null),
+        (typeof $download !== 'undefined' ? $download : null),
+        document.getElementById('geminiSelectionEdit')
+      ].filter(Boolean);
+
+      function setPrivilegedVisible(visible) {
+        privilegedEls.forEach(el => {
+          // Use a dedicated class so we don't override Tailwind responsive intent
+          // (e.g., Edit/Download are still hidden on mobile via `hidden sm:inline-flex`).
+          el.classList.toggle('px-privilege-hidden', !visible);
+          if (!visible) {
+            el.setAttribute('aria-hidden', 'true');
+          } else {
+            el.removeAttribute('aria-hidden');
+          }
+        });
+      }
+
+      // Default to hidden until role is verified.
+      setPrivilegedVisible(false);
+
+      (async function () {
+        try {
+          const token = getAuthToken();
+          if (!token) return;
+          const res = await fetch(`${apiBase}/api/admin/roles/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!res.ok) return;
+          const data = await res.json().catch(() => ({}));
+          const primaryRole = String(data?.role || data?.user_role || data?.userRole || '').toLowerCase().trim();
+          const rolesArr = Array.isArray(data?.roles) ? data.roles.map(r => String(r || '').toLowerCase().trim()) : [];
+          const isAdmin = primaryRole === 'admin' || rolesArr.includes('admin') || data?.is_admin === true;
+          const isEmployee = primaryRole === 'employee' || rolesArr.includes('employee') || data?.is_employee === true;
+          if (isAdmin || isEmployee) {
+            setPrivilegedVisible(true);
+          }
+        } catch (_) {
+          // Keep privileged buttons hidden on any failure
+        }
+      })();
+    })();
 
     // ===== My note visibility and loading =====
     async function checkMyNoteVisibility() {
@@ -1921,7 +1998,15 @@
 
       const channelName = document.createElement('span');
       channelName.className = 'yt-channel-name';
-      channelName.textContent = (video.channel || 'YouTube').toString();
+      const channelFull = (video.channel || 'YouTube').toString();
+      channelName.textContent = channelFull;
+      channelName.title = channelFull;
+      try {
+        if (window.matchMedia && window.matchMedia('(max-width: 640px)').matches) {
+          const trimmed = channelFull.trim();
+          channelName.textContent = trimmed.length > 10 ? (trimmed.slice(0, 10) + '...') : trimmed;
+        }
+      } catch { }
       meta.appendChild(channelName);
 
       if (video.views) {
@@ -2494,16 +2579,29 @@
 
     // ===== Theme (shared manager) =====
     (function initSharedTheme() {
+      function applyThemeButton(mode) {
+        const nextLabel = mode === 'dark' ? 'Light' : 'Dark';
+        if ($themeText) {
+          $themeText.textContent = nextLabel;
+        } else if ($themeBtn) {
+          // Fallback for older markup
+          $themeBtn.textContent = nextLabel;
+        }
+        if ($themeIcon) {
+          // Show the action (what clicking will switch to)
+          $themeIcon.textContent = mode === 'dark' ? 'light_mode' : 'dark_mode';
+        }
+      }
       try {
         // Ensure global Theme is initialized (config.js handles apply + data-theme)
         if (window.Theme && typeof window.Theme.init === 'function') window.Theme.init();
         const mode = (window.Theme && window.Theme.get && window.Theme.get()) || (document.documentElement.classList.contains('dark') ? 'dark' : 'light');
-        $themeBtn.textContent = mode === 'dark' ? 'Light' : 'Dark';
+        applyThemeButton(mode);
       } catch { }
       $themeBtn.addEventListener('click', () => {
         try {
           const mode = (window.Theme && window.Theme.toggle && window.Theme.toggle()) || (document.documentElement.classList.toggle('dark'), document.documentElement.classList.contains('dark') ? 'dark' : 'light');
-          $themeBtn.textContent = mode === 'dark' ? 'Light' : 'Dark';
+          applyThemeButton(mode);
         } catch { }
       });
     })();

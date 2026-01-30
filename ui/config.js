@@ -1,21 +1,22 @@
 // Global API base config for UI pages
 // Priority:
 // 1) LocalStorage key 'API_BASE'
-// 2) Always use production backend at https://paperxapp.onrender.com
+// 2) If running on localhost/127.0.0.1, use FastAPI default http://127.0.0.1:8000
+// 3) Fallback to current origin
 (function(){
   try {
     var preset = (typeof window.API_BASE === 'string' && window.API_BASE.trim()) || null;
     var saved = !preset && localStorage.getItem('API_BASE');
     var resolved = preset || (saved && /^https?:\/\//i.test(saved) ? saved : null);
     if (!resolved) {
-      // Always use the production backend API
-      resolved = 'https://paperxapp.onrender.com';
+      var origin = (typeof location !== 'undefined' && location.origin) ? location.origin : '';
+      resolved = /localhost|127\.0\.0\.1/.test(origin) ? 'http://127.0.0.1:8000' : (origin || 'http://127.0.0.1:8000');
     }
-    resolved = resolved.replace(/\/$/, '');
+      resolved = resolved.replace(/\/$/, '');
     window.API_BASE = resolved;
     window.__API_BASE = resolved;
   } catch (_) {
-    var fallback = 'https://paperxapp.onrender.com';
+    var fallback = 'http://127.0.0.1:8000';
     window.API_BASE = fallback;
     window.__API_BASE = fallback;
   }
@@ -93,7 +94,7 @@
 
 (function(){
   window.__TUNE_AI_ENABLED = false;
-  window.__CHAT_API_BASE = (window.__API_BASE || 'https://paperxapp.onrender.com') + '/api/tune-ai';
+  window.__CHAT_API_BASE = (window.__API_BASE || 'http://127.0.0.1:8000') + '/api/tune-ai';
 })();
 
 (function(){
@@ -147,7 +148,7 @@
   ready(function initTuNeAI(){
     if (document.getElementById('tune-ai-panel')) return; // already injected
 
-    var API = (window.__CHAT_API_BASE || ((window.__API_BASE || 'https://paperxapp.onrender.com').replace(/\/$/, '') + '/api/tune-ai')).replace(/\/$/, '');
+    var API = (window.__CHAT_API_BASE || ((window.__API_BASE || 'http://127.0.0.1:8000').replace(/\/$/, '') + '/api/tune-ai')).replace(/\/$/, '');
     var keyOpen = 'tune-ai-open:' + (location && location.pathname || '/');
     var keyMsgs = 'tune-ai-msgs:' + (location && location.pathname || '/');
 

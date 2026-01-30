@@ -16,7 +16,7 @@
     <script>(() => { const s = localStorage.getItem('px_theme'); const p = matchMedia('(prefers-color-scheme: dark)').matches; const m = s ? s : (p ? 'dark' : 'light'); if (m === 'dark') document.documentElement.classList.add('dark'); })();</script>
     <script src="./config.js"></script>
     <script>// Hard-set API base to deployed server
-        window.API_BASE = 'https://paperxapp.onrender.com';
+        window.API_BASE = 'http://127.0.0.1:8000';
     </script>
     <style>
         .material-symbols-rounded {
@@ -166,7 +166,7 @@
         </form>
     </main>
     <script>
-        const API_BASE = (window.API_BASE || 'https://paperxapp.onrender.com').replace(/\/$/, '');
+        const API_BASE = (window.API_BASE || 'http://127.0.0.1:8000').replace(/\/$/, '');
         function getToken() { const keys = ['px_token', 'teacherToken', 'userToken', 'sb-access-token', 'supabase.auth.token']; for (const k of keys) { try { const v = localStorage.getItem(k); if (v) return v; } catch { } } return '' }
         function decodeJwtUserId(t) { try { const p = t.split('.')[1]; if (!p) return null; return JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/'))).sub || null; } catch { return null } }
         async function fetchMe() {
