@@ -16544,7 +16544,7 @@ def create_app() -> FastAPI:
         allow_origins=[
             "https://paperx.tech",
             "https://www.paperx.tech",
-            "https://lionfish-app-ynu29.ondigitalocean.app",
+            "https://squid-app-6jvdq.ondigitalocean.app",
             "https://uppzpkmpxgyipjzcskva.supabase.co",
             "http://127.0.0.1:5500",
             "http://127.0.0.1:8000",
