@@ -18553,6 +18553,96 @@ app.include_router(labx_router)
 group_chat_rooms: Dict[str, Dict[str, Any]] = {}
 group_chat_connections: Dict[str, Dict[str, WebSocket]] = {}  # room_id -> {user_id: websocket}
 
+DEFAULT_GROUP_CHAT_SETTINGS: Dict[str, Any] = {
+    "host_management_enabled": True,
+    "chat_enabled": True,
+    "screen_share_enabled": True,
+    "reactions_enabled": True,
+    "participants_can_unmute": True,
+    "participants_can_start_video": True,
+    "lock_meeting": False,
+    "waiting_room_enabled": False,
+    "access_type": "open",  # open|trusted
+    "allow_ask_to_join": True,
+    "host_must_join_first": False,
+}
+
+
+def _merge_settings(current: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(current or {})
+    for k, v in (patch or {}).items():
+        if k in DEFAULT_GROUP_CHAT_SETTINGS:
+            merged[k] = v
+    # ensure all defaults exist
+    for k, v in DEFAULT_GROUP_CHAT_SETTINGS.items():
+        merged.setdefault(k, v)
+    # normalize
+    if merged.get("access_type") not in ("open", "trusted"):
+        merged["access_type"] = "open"
+    return merged
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+        return True
+    except Exception:
+        return False
+
+
+def _is_moderator(room: Dict[str, Any], user_id: str) -> bool:
+    if not room or not user_id:
+        return False
+    if user_id == room.get("host_id"):
+        return True
+    return user_id in set(room.get("cohosts", set()) or set())
+
+
+def _participant_role(room: Dict[str, Any], user_id: str) -> str:
+    if user_id == room.get("host_id"):
+        return "host"
+    if user_id in set(room.get("cohosts", set()) or set()):
+        return "cohost"
+    return "participant"
+
+
+def _participants_payload(room: Dict[str, Any]) -> List[Dict[str, Any]]:
+    muted: Set[str] = set(room.get("muted_user_ids") or set())
+    out: List[Dict[str, Any]] = []
+    for p in (room.get("participants") or {}).values():
+        item = dict(p)
+        item["muted"] = str(item.get("user_id")) in muted
+        out.append(item)
+    return out
+
+
+async def _persist_group_call_settings(room_id: str, settings: Dict[str, Any]) -> None:
+    try:
+        supabase = get_service_client()
+        # Upsert settings
+        supabase.table("group_call_settings").upsert({
+            "call_id": room_id,
+            "settings": settings,
+        }).execute()
+    except Exception as e:
+        print(f"[GroupChat] Settings persist error: {e}")
+
+
+async def _log_group_call_event(room_id: str, actor_user_id: Optional[str], event_type: str, event_data: Dict[str, Any]) -> None:
+    try:
+        if actor_user_id and not _is_uuid(actor_user_id):
+            actor_user_id = None
+        supabase = get_service_client()
+        supabase.table("group_call_events").insert({
+            "call_id": room_id,
+            "actor_user_id": actor_user_id,
+            "event_type": event_type,
+            "event_data": event_data or {},
+        }).execute()
+    except Exception:
+        # Best-effort audit log; never break the call.
+        pass
+
 class GroupChatMessage(BaseModel):
     type: str  # "join", "leave", "offer", "answer", "ice-candidate", "whiteboard-draw", "screen-share-started", "screen-share-stopped"
     data: Optional[Dict[str, Any]] = None
@@ -18601,25 +18691,213 @@ async def create_group_chat_room(
         "host_name": host_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "participants": {},  # user_id -> {name, joined_at, is_host}
+        "pending": {},  # user_id -> {name, requested_at}
+        "cohosts": set(),
+        "muted_user_ids": set(),
+        "settings": dict(DEFAULT_GROUP_CHAT_SETTINGS),
         "whiteboard_history": [],  # Drawing history for late joiners
         "screen_share_active": False,
         "screen_sharer_id": None,
+        "status": "active"
     }
     group_chat_connections[room_id] = {}
+
+    # Store in Database
+    try:
+        supabase = get_service_client()
+        supabase.table("group_calls").insert({
+            "id": room_id,
+            "room_name": name,
+            "host_user_id": host_id,
+            "status": "active"
+        }).execute()
+
+        # Default settings + role bootstrap (best-effort)
+        try:
+            supabase.table("group_call_settings").upsert({
+                "call_id": room_id,
+                "settings": dict(DEFAULT_GROUP_CHAT_SETTINGS),
+            }).execute()
+        except Exception:
+            pass
+
+        try:
+            if _is_uuid(host_id):
+                # store cohosts only; host is already on group_calls
+                pass
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[GroupChat] DB Insert Error: {e}")
     
     return JSONResponse(content={
         "room_id": room_id,
         "name": name,
         "host_id": host_id,
-        "join_url": f"/ui/group_chat.html?room={room_id}",
+        "join_url": f"/ui/groupChat/group_chat.html?room={room_id}",
     })
+
+@app.post("/api/group-chat/end")
+async def end_group_chat_room(
+    room_id: str = Body(..., embed=True),
+    authorization: Optional[str] = Header(None)
+):
+    """End a group chat room."""
+    # Verify user is host
+    user_id = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+        try:
+            supabase = get_service_client()
+            user_resp = supabase.auth.get_user(token)
+            if user_resp and user_resp.user:
+                user_id = user_resp.user.id
+        except:
+            raise HTTPException(status_code=401, detail="Invalid token")
+            
+    if not user_id:
+         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    room = group_chat_rooms.get(room_id)
+    
+    # If not in memory, check DB
+    if not room:
+         supabase = get_service_client()
+         res = supabase.table("group_calls").select("*").eq("id", room_id).execute()
+         if res.data:
+             db_room = res.data[0]
+             if db_room["host_user_id"] != user_id:
+                  raise HTTPException(status_code=403, detail="Only host can end the call")
+             # Mark ended in DB
+             supabase.table("group_calls").update({
+                 "status": "ended",
+                 "ended_at": datetime.now(timezone.utc).isoformat()
+             }).eq("id", room_id).execute()
+             return {"success": True, "message": "Call ended (was not active in memory)"}
+         else:
+             raise HTTPException(status_code=404, detail="Room not found")
+
+    if room["host_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only host can end the call")
+        
+    # Mark as ended in memory
+    room["status"] = "ended"
+    
+    # Notify all users
+    await broadcast_to_room(room_id, {
+        "type": "room-ended",
+        "data": {"reason": "Host ended the call"}
+    })
+    
+    # Close all connections
+    connections = group_chat_connections.get(room_id, {})
+    for ws in list(connections.values()):
+        await ws.close()
+    
+    # Clean up memory
+    if room_id in group_chat_rooms:
+        del group_chat_rooms[room_id]
+    if room_id in group_chat_connections:
+        del group_chat_connections[room_id]
+        
+    # Update DB
+    try:
+        supabase = get_service_client()
+        supabase.table("group_calls").update({
+            "status": "ended",
+            "ended_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", room_id).execute()
+    except Exception as e:
+        print(f"[GroupChat] DB Update Error: {e}")
+        
+    return {"success": True}
+
+@app.get("/api/group-chat/history")
+async def get_group_chat_history(authorization: Optional[str] = Header(None)):
+    """Get call history for the user."""
+    if not authorization or not authorization.startswith("Bearer "):
+         raise HTTPException(status_code=401, detail="Unauthorized")
+         
+    token = authorization.split(" ")[1]
+    supabase = get_service_client()
+    try:
+        user_resp = supabase.auth.get_user(token)
+        if not user_resp or not user_resp.user:
+             raise HTTPException(status_code=401, detail="Invalid token")
+        user_id = user_resp.user.id
+    except:
+         raise HTTPException(status_code=401, detail="Invalid token")
+         
+    # 1. Active calls created by me
+    active_calls = []
+    try:
+        res = supabase.table("group_calls").select("*").eq("host_user_id", user_id).eq("status", "active").order("created_at", desc=True).execute()
+        active_calls = res.data or []
+    except Exception as e:
+        print(f"Error fetching active calls: {e}")
+
+    # 2. Past calls (created or attended)
+    past_calls = []
+    try:
+        # Calls I created (ended)
+        res_hosted = supabase.table("group_calls").select("*").eq("host_user_id", user_id).neq("status", "active").order("created_at", desc=True).limit(20).execute()
+        hosted = res_hosted.data or []
+        
+        # Calls I attended (via participants table)
+        # Note: This requires a join or two queries.
+        res_attended = supabase.table("group_call_participants").select("call_id, group_calls(*)").eq("user_id", user_id).order("joined_at", desc=True).limit(20).execute()
+        attended = []
+        if res_attended.data:
+            for item in res_attended.data:
+                call = item.get("group_calls")
+                if call and call.get("host_user_id") != user_id: # Avoid duplicates if I hosted it
+                    attended.append(call)
+        
+        # Merge and sort
+        all_past = hosted + attended
+        # Deduplicate by id
+        seen = set()
+        unique_past = []
+        for c in all_past:
+             if c["id"] not in seen:
+                 unique_past.append(c)
+                 seen.add(c["id"])
+                 
+        # Sort by created_at desc
+        unique_past.sort(key=lambda x: x["created_at"], reverse=True)
+        past_calls = unique_past[:50]
+        
+    except Exception as e:
+         print(f"Error fetching past calls: {e}")
+         
+    return {
+        "active_created": active_calls,
+        "history": past_calls
+    }
+
 
 @app.get("/api/group-chat/{room_id}")
 async def get_group_chat_room(room_id: str):
     """Get room information."""
     room = group_chat_rooms.get(room_id)
+    
+    # If not in memory/active, it might be an ended call or just not loaded
     if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+        # Check DB to see if it exists but ended
+        supabase = get_service_client()
+        try:
+             res = supabase.table("group_calls").select("*").eq("id", room_id).execute()
+             if res.data:
+                 if res.data[0]["status"] != "active":
+                      raise HTTPException(status_code=400, detail="This call has ended")
+                 # If active in DB but not in memory, we could technically resurrect it or just say not found (server restart case)
+                 # For now, simplistic approach:
+                 pass
+        except:
+             pass
+             
+        raise HTTPException(status_code=404, detail="Room not found or ended")
+
     
     return JSONResponse(content={
         "id": room["id"],
@@ -18628,6 +18906,7 @@ async def get_group_chat_room(room_id: str):
         "host_name": room["host_name"],
         "participant_count": len(room["participants"]),
         "participants": list(room["participants"].values()),
+        "settings": room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS),
         "screen_share_active": room.get("screen_share_active", False),
         "screen_sharer_id": room.get("screen_sharer_id"),
     })
@@ -18635,7 +18914,11 @@ async def get_group_chat_room(room_id: str):
 async def broadcast_to_room(room_id: str, message: dict, exclude_user_id: Optional[str] = None):
     """Broadcast a message to all participants in a room."""
     connections = group_chat_connections.get(room_id, {})
+    room = group_chat_rooms.get(room_id)
+    participants = set((room or {}).get("participants", {}).keys())
     for user_id, ws in list(connections.items()):
+        if participants and user_id not in participants:
+            continue
         if exclude_user_id and user_id == exclude_user_id:
             continue
         try:
@@ -18660,6 +18943,66 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
     
     room = group_chat_rooms.get(room_id)
     if not room:
+        # Try to restore from DB if not in memory (e.g. server restart)
+        try:
+            supabase = get_service_client()
+            res = supabase.table("group_calls").select("*").eq("id", room_id).execute()
+            if res.data and res.data[0]["status"] == "active":
+                db_room = res.data[0]
+                host_id = db_room["host_user_id"]
+                
+                # Try to fetch host name
+                host_name = "Host"
+                try:
+                    p_res = supabase.table("profiles").select("name").eq("user_id", host_id).maybe_single().execute()
+                    if p_res.data and p_res.data.get("name"):
+                        host_name = p_res.data["name"]
+                except:
+                    pass
+
+                # Restore to memory
+                group_chat_rooms[room_id] = {
+                    "id": room_id,
+                    "name": db_room["room_name"],
+                    "host_id": host_id,
+                    "host_name": host_name,
+                    "created_at": db_room.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                    "participants": {},
+                    "pending": {},
+                    "cohosts": set(),
+                    "muted_user_ids": set(),
+                    "settings": dict(DEFAULT_GROUP_CHAT_SETTINGS),
+                    "whiteboard_history": [],
+                    "screen_share_active": False,
+                    "screen_sharer_id": None,
+                    "status": "active"
+                }
+                group_chat_connections[room_id] = {}
+                room = group_chat_rooms[room_id]
+                print(f"[GroupChat] Restored room {room_id} from DB")
+
+                # Restore settings + cohosts (best-effort)
+                try:
+                    s_res = supabase.table("group_call_settings").select("settings").eq("call_id", room_id).maybe_single().execute()
+                    if s_res.data and isinstance(s_res.data.get("settings"), dict):
+                        room["settings"] = _merge_settings(dict(DEFAULT_GROUP_CHAT_SETTINGS), s_res.data["settings"])
+                except Exception:
+                    pass
+
+                try:
+                    r_res = supabase.table("group_call_roles").select("user_id, role").eq("call_id", room_id).execute()
+                    cohosts: Set[str] = set()
+                    if r_res.data:
+                        for item in r_res.data:
+                            if item.get("role") == "cohost" and item.get("user_id"):
+                                cohosts.add(str(item["user_id"]))
+                    room["cohosts"] = cohosts
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[GroupChat] Error restoring room: {e}")
+
+    if not room:
         await websocket.send_json({"type": "error", "message": "Room not found"})
         await websocket.close()
         return
@@ -18678,41 +19021,165 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
         
         user_id = join_data.get("data", {}).get("user_id") or generate_user_id()
         user_name = join_data.get("data", {}).get("name") or "Anonymous"
+
+        # If a token is provided, trust auth-derived identity over client-provided fields.
+        join_token = join_data.get("data", {}).get("token")
+        if join_token and isinstance(join_token, str) and join_token.strip():
+            try:
+                supabase = get_service_client()
+                user_resp = supabase.auth.get_user(join_token.strip())
+                if user_resp and user_resp.user:
+                    user_id = str(user_resp.user.id)
+                    # prefer profile name
+                    try:
+                        p = supabase.table("profiles").select("name").eq("user_id", user_id).maybe_single().execute()
+                        if p.data and p.data.get("name"):
+                            user_name = p.data["name"]
+                    except Exception:
+                        pass
+            except Exception:
+                # Token invalid -> keep client-supplied identity
+                pass
+
+        # Enforce bans for authenticated users
+        if _is_uuid(user_id):
+            try:
+                supabase = get_service_client()
+                ban = supabase.table("group_call_bans").select("id").eq("call_id", room_id).eq("user_id", user_id).maybe_single().execute()
+                if ban.data:
+                    await websocket.send_json({"type": "join-denied", "data": {"reason": "banned"}})
+                    await websocket.close()
+                    return
+            except Exception:
+                pass
+
         is_host = user_id == room["host_id"]
+        can_moderate = _is_moderator(room, user_id)
+
+        # Access type enforcement (trusted requires authenticated UUID)
+        settings = room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS)
+        settings = _merge_settings(dict(DEFAULT_GROUP_CHAT_SETTINGS), settings)
+        room["settings"] = settings
+
+        if settings.get("access_type") == "trusted" and not _is_uuid(user_id):
+            await websocket.send_json({"type": "join-denied", "data": {"reason": "trusted_only"}})
+            await websocket.close()
+            return
+
+        # Invite-only mode: trusted + no ask-to-join -> only host/co-host may enter
+        if settings.get("access_type") == "trusted" and not settings.get("allow_ask_to_join", True) and not can_moderate:
+            await websocket.send_json({"type": "join-denied", "data": {"reason": "invite_only"}})
+            await websocket.close()
+            return
+
+        # Lock meeting enforcement
+        if settings.get("lock_meeting") and not can_moderate:
+            await websocket.send_json({"type": "join-denied", "data": {"reason": "locked"}})
+            await websocket.close()
+            return
+
+        # Waiting room / host-must-join-first: keep connection in pending mode until admitted.
+        pending_mode = False
+        if not can_moderate:
+            host_present = room.get("host_id") in set((room.get("participants") or {}).keys())
+            if settings.get("waiting_room_enabled") or (settings.get("host_must_join_first") and not host_present):
+                pending_mode = True
+                room.setdefault("pending", {})[user_id] = {
+                    "user_id": user_id,
+                    "name": user_name,
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                }
+                group_chat_connections[room_id][user_id] = websocket
+
+                await websocket.send_json({
+                    "type": "waiting-room",
+                    "data": {
+                        "room_id": room_id,
+                        "message": "Waiting for the host to admit you",
+                    },
+                })
+
+                await broadcast_to_room(room_id, {
+                    "type": "join-request",
+                    "data": {"user_id": user_id, "name": user_name},
+                })
         
-        # Add to room
-        room["participants"][user_id] = {
-            "user_id": user_id,
-            "name": user_name,
-            "joined_at": datetime.now(timezone.utc).isoformat(),
-            "is_host": is_host,
-        }
-        group_chat_connections[room_id][user_id] = websocket
-        
-        # Send room info and existing participants to new user
-        await websocket.send_json({
-            "type": "room-info",
-            "data": {
-                "room_id": room_id,
-                "name": room["name"],
-                "your_user_id": user_id,
-                "is_host": is_host,
-                "participants": list(room["participants"].values()),
-                "whiteboard_history": room.get("whiteboard_history", [])[-100:],  # Last 100 strokes
-                "screen_share_active": room.get("screen_share_active", False),
-                "screen_sharer_id": room.get("screen_sharer_id"),
-            }
-        })
-        
-        # Notify others about new participant
-        await broadcast_to_room(room_id, {
-            "type": "user-joined",
-            "data": {
+        if not pending_mode:
+            # Add to room
+            room["participants"][user_id] = {
                 "user_id": user_id,
                 "name": user_name,
+                "joined_at": datetime.now(timezone.utc).isoformat(),
                 "is_host": is_host,
+                "role": _participant_role(room, user_id),
             }
-        }, exclude_user_id=user_id)
+            group_chat_connections[room_id][user_id] = websocket
+
+            # Send room info and existing participants to new user
+            await websocket.send_json({
+                "type": "room-info",
+                "data": {
+                    "room_id": room_id,
+                    "name": room["name"],
+                    "your_user_id": user_id,
+                    "is_host": is_host,
+                    "can_moderate": can_moderate,
+                    "role": _participant_role(room, user_id),
+                    "settings": room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS),
+                    "pending": list((room.get("pending") or {}).values()) if can_moderate else [],
+                    "participants": _participants_payload(room),
+                    "whiteboard_history": room.get("whiteboard_history", [])[-100:],  # Last 100 strokes
+                    "screen_share_active": room.get("screen_share_active", False),
+                    "screen_sharer_id": room.get("screen_sharer_id"),
+                }
+            })
+
+            # Notify others about new participant
+            await broadcast_to_room(room_id, {
+                "type": "user-joined",
+                "data": {
+                    "user_id": user_id,
+                    "name": user_name,
+                    "is_host": is_host,
+                    "role": _participant_role(room, user_id),
+                }
+            }, exclude_user_id=user_id)
+        
+        # ---------------------------
+        # Record Attendance in DB
+        # ---------------------------
+        try:
+            supabase = get_service_client()
+            # Check if executing in a way that allows us to check DB
+            # We want to record (call_id, user_id)
+            # Check if already recorded to avoid dups if re-joining?
+            # The table has a PK, so we can just Insert and ignore specific errors active
+            
+            # Since user_id in memory might be "user-xxxx", we should only record if it is a real UUID (authenticated)
+            # OR we just store whatever user_id we have (the schema defined uuid, so we must check)
+            
+            is_valid_uuid = False
+            try:
+                uuid.UUID(user_id)
+                is_valid_uuid = True
+            except:
+                is_valid_uuid = False
+                
+            if is_valid_uuid:
+                # Check if already exists?
+                exists = supabase.table("group_call_participants").select("id").eq("call_id", room_id).eq("user_id", user_id).execute()
+                if not exists.data:
+                     try:
+                        supabase.table("group_call_participants").insert({
+                            "call_id": room_id,
+                            "user_id": user_id
+                        }).execute()
+                     except Exception as ex:
+                          print(f"Error inserting participant: {ex}")
+
+        except Exception as e:
+            print(f"Error recording attendance: {e}")
+
         
         # Main message loop
         while True:
@@ -18720,6 +19187,187 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
             msg_type = message.get("type")
             msg_data = message.get("data", {})
             target_user_id = message.get("target_user_id")
+
+            # If this user was pending and got admitted, allow normal message flow.
+            if pending_mode and user_id in (room.get("participants") or {}):
+                pending_mode = False
+
+            if pending_mode:
+                # Pending users can't send signaling/messages until admitted.
+                if msg_type in ("leave",):
+                    break
+                continue
+
+            # Moderator controls
+            if msg_type == "host-set-settings":
+                if not _is_moderator(room, user_id):
+                    continue
+                new_settings = _merge_settings(room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS), msg_data)
+                room["settings"] = new_settings
+                await _persist_group_call_settings(room_id, new_settings)
+                await _log_group_call_event(room_id, user_id if _is_uuid(user_id) else None, "host_set_settings", msg_data)
+                await broadcast_to_room(room_id, {
+                    "type": "settings-updated",
+                    "data": {"settings": new_settings},
+                })
+                continue
+
+            if msg_type == "host-mute-all":
+                if not _is_moderator(room, user_id):
+                    continue
+                await _log_group_call_event(room_id, user_id if _is_uuid(user_id) else None, "host_mute_all", {})
+                muted_set: Set[str] = set(room.get("muted_user_ids") or set())
+                targets: List[str] = []
+                for pid in list((room.get("participants") or {}).keys()):
+                    if not pid or pid == user_id:
+                        continue
+                    # Don't force-mute host/cohost by default
+                    if _is_moderator(room, pid):
+                        continue
+                    muted_set.add(pid)
+                    targets.append(pid)
+                room["muted_user_ids"] = muted_set
+                for pid in targets:
+                    await send_to_user(room_id, pid, {
+                        "type": "host-mute",
+                        "data": {"scope": "user", "by": user_id},
+                    })
+                await broadcast_to_room(room_id, {
+                    "type": "participants-updated",
+                    "data": {"participants": _participants_payload(room)},
+                })
+                continue
+
+            if msg_type == "host-mute-user":
+                if not _is_moderator(room, user_id) or not target_user_id:
+                    continue
+                room.setdefault("muted_user_ids", set()).add(target_user_id)
+                await _log_group_call_event(room_id, user_id if _is_uuid(user_id) else None, "host_mute_user", {"target": target_user_id})
+                await send_to_user(room_id, target_user_id, {
+                    "type": "host-mute",
+                    "data": {"scope": "user", "by": user_id},
+                })
+                await broadcast_to_room(room_id, {
+                    "type": "participants-updated",
+                    "data": {"participants": _participants_payload(room)},
+                })
+                continue
+
+            if msg_type == "host-unmute-user":
+                if not _is_moderator(room, user_id) or not target_user_id:
+                    continue
+                try:
+                    room.setdefault("muted_user_ids", set()).discard(target_user_id)
+                except Exception:
+                    room["muted_user_ids"] = set()
+                await _log_group_call_event(room_id, user_id if _is_uuid(user_id) else None, "host_unmute_user", {"target": target_user_id})
+                await send_to_user(room_id, target_user_id, {
+                    "type": "host-unmute",
+                    "data": {"scope": "user", "by": user_id},
+                })
+                await broadcast_to_room(room_id, {
+                    "type": "participants-updated",
+                    "data": {"participants": _participants_payload(room)},
+                })
+                continue
+
+            if msg_type == "host-kick":
+                if not _is_moderator(room, user_id) or not target_user_id:
+                    continue
+                # never allow kicking the host
+                if target_user_id == room.get("host_id"):
+                    continue
+                # remove from pending if present
+                try:
+                    (room.get("pending") or {}).pop(target_user_id, None)
+                except Exception:
+                    pass
+                await _log_group_call_event(room_id, user_id if _is_uuid(user_id) else None, "host_kick", {"target": target_user_id})
+                await send_to_user(room_id, target_user_id, {
+                    "type": "kicked",
+                    "data": {"by": user_id, "reason": msg_data.get("reason") or "removed"},
+                })
+                try:
+                    t_ws = group_chat_connections.get(room_id, {}).get(target_user_id)
+                    if t_ws:
+                        await t_ws.close()
+                except Exception:
+                    pass
+                continue
+
+            if msg_type == "host-set-role":
+                if not _is_moderator(room, user_id) or not target_user_id:
+                    continue
+                role = (msg_data or {}).get("role")
+                if role not in ("cohost", "participant"):
+                    continue
+                if target_user_id == room.get("host_id"):
+                    continue
+                if role == "cohost":
+                    room.setdefault("cohosts", set()).add(target_user_id)
+                    # Persist if uuid
+                    if _is_uuid(target_user_id):
+                        try:
+                            supabase = get_service_client()
+                            supabase.table("group_call_roles").upsert({
+                                "call_id": room_id,
+                                "user_id": target_user_id,
+                                "role": "cohost",
+                            }).execute()
+                        except Exception:
+                            pass
+                else:
+                    room.setdefault("cohosts", set()).discard(target_user_id)
+                    if _is_uuid(target_user_id):
+                        try:
+                            supabase = get_service_client()
+                            supabase.table("group_call_roles").delete().eq("call_id", room_id).eq("user_id", target_user_id).execute()
+                        except Exception:
+                            pass
+
+                # Update participant roles in memory
+                if target_user_id in room.get("participants", {}):
+                    room["participants"][target_user_id]["role"] = _participant_role(room, target_user_id)
+                # Broadcast refreshed participants list
+                await broadcast_to_room(room_id, {
+                    "type": "participants-updated",
+                    "data": {"participants": _participants_payload(room)},
+                })
+                continue
+
+            if msg_type == "host-admit":
+                if not _is_moderator(room, user_id) or not target_user_id:
+                    continue
+                pending = (room.get("pending") or {}).pop(target_user_id, None)
+                if not pending:
+                    continue
+                # admit: add to participants and send room-info
+                role = _participant_role(room, target_user_id)
+                room.setdefault("participants", {})[target_user_id] = {
+                    "user_id": target_user_id,
+                    "name": pending.get("name") or "Anonymous",
+                    "joined_at": datetime.now(timezone.utc).isoformat(),
+                    "is_host": target_user_id == room.get("host_id"),
+                    "role": role,
+                }
+                await send_to_user(room_id, target_user_id, {
+                    "type": "admitted",
+                    "data": {
+                        "room_id": room_id,
+                        "settings": room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS),
+                        "participants": _participants_payload(room),
+                    },
+                })
+                await broadcast_to_room(room_id, {
+                    "type": "user-joined",
+                    "data": {
+                        "user_id": target_user_id,
+                        "name": pending.get("name") or "Anonymous",
+                        "is_host": target_user_id == room.get("host_id"),
+                        "role": role,
+                    },
+                }, exclude_user_id=target_user_id)
+                continue
             
             if msg_type == "offer":
                 # Forward SDP offer to target user
@@ -18767,10 +19415,30 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
                     "type": "whiteboard-clear",
                     "data": {"cleared_by": user_id},
                 })
+
+            elif msg_type == "annotation-draw":
+                # Ephemeral screen-share annotations (not persisted)
+                await broadcast_to_room(room_id, {
+                    "type": "annotation-draw",
+                    "data": msg_data,
+                    "from_user_id": user_id,
+                }, exclude_user_id=user_id)
+
+            elif msg_type == "annotation-clear":
+                await broadcast_to_room(room_id, {
+                    "type": "annotation-clear",
+                    "data": {"cleared_by": user_id},
+                    "from_user_id": user_id,
+                })
             
             elif msg_type == "screen-share-started":
                 # Host started screen sharing
-                if is_host or not room.get("screen_share_active"):
+                settings = room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS)
+                if not settings.get("host_management_enabled", True):
+                    allowed = True
+                else:
+                    allowed = settings.get("screen_share_enabled", True)
+                if _is_moderator(room, user_id) or allowed:
                     room["screen_share_active"] = True
                     room["screen_sharer_id"] = user_id
                     await broadcast_to_room(room_id, {
@@ -18790,14 +19458,50 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
             
             elif msg_type == "chat-message":
                 # Text chat message
+                settings = room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS)
+                if not settings.get("host_management_enabled", True):
+                    allowed = True
+                else:
+                    allowed = settings.get("chat_enabled", True)
+                if allowed or _is_moderator(room, user_id):
+                    await broadcast_to_room(room_id, {
+                        "type": "chat-message",
+                        "data": {
+                            "user_id": user_id,
+                            "name": user_name,
+                            "message": msg_data.get("message", ""),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    })
+
+            elif msg_type == "reaction":
+                # Broadcast reaction to others
+                settings = room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS)
+                if not settings.get("host_management_enabled", True):
+                    allowed = True
+                else:
+                    allowed = settings.get("reactions_enabled", True)
+                if allowed or _is_moderator(room, user_id):
+                    await broadcast_to_room(room_id, {
+                        "type": "reaction",
+                        "data": msg_data,
+                        "from_user_id": user_id,
+                    }, exclude_user_id=user_id)
+
+            elif msg_type == "hand-raised":
                 await broadcast_to_room(room_id, {
-                    "type": "chat-message",
-                    "data": {
-                        "user_id": user_id,
-                        "name": user_name,
-                        "message": msg_data.get("message", ""),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
+                    "type": "hand-raised",
+                    "data": msg_data,
+                    "from_user_id": user_id,
+                    "name": user_name
+                }) # Don't exclude sender so they see confirmation if needed (though UI handles local)
+
+            elif msg_type == "hand-lowered":
+                 await broadcast_to_room(room_id, {
+                    "type": "hand-lowered",
+                    "data": msg_data,
+                    "from_user_id": user_id,
+                    "name": user_name
                 })
     
     except WebSocketDisconnect:
@@ -18810,6 +19514,13 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
             # Remove from connections
             if room_id in group_chat_connections:
                 group_chat_connections[room_id].pop(user_id, None)
+
+            # Remove from pending
+            if room_id in group_chat_rooms:
+                try:
+                    (group_chat_rooms[room_id].get("pending") or {}).pop(user_id, None)
+                except Exception:
+                    pass
             
             # Remove from participants
             if room_id in group_chat_rooms and user_id in group_chat_rooms[room_id]["participants"]:
