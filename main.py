@@ -19123,7 +19123,9 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
                     "settings": room.get("settings") or dict(DEFAULT_GROUP_CHAT_SETTINGS),
                     "pending": list((room.get("pending") or {}).values()) if can_moderate else [],
                     "participants": _participants_payload(room),
-                    "whiteboard_history": room.get("whiteboard_history", [])[-100:],  # Last 100 strokes
+                    # Send full in-memory history (capped when stored) so refresh/new joiners
+                    # can fully reconstruct the whiteboard.
+                    "whiteboard_history": room.get("whiteboard_history", []),
                     "screen_share_active": room.get("screen_share_active", False),
                     "screen_sharer_id": room.get("screen_sharer_id"),
                 }
