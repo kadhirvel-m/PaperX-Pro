@@ -17283,7 +17283,7 @@ def create_app() -> FastAPI:
             "https://paperx.tech",
             "https://www.paperx.tech",
             "https://squid-app-6jvdq.ondigitalocean.app/",
-            "https://uppzpkmpxgyipjzcskva.supabase.co,
+            "https://uppzpkmpxgyipjzcskva.supabase.co",
         ],
         allow_credentials=True,
         allow_methods=["*"],
