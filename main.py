@@ -44,6 +44,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, Body, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, Request
 from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 try:
@@ -7416,7 +7417,7 @@ def _count_admins(supabase) -> int:
         return 0
 
 
-VALID_ROLES = {"admin", "teacher", "student", "moderator", "employee"}
+VALID_ROLES = {"admin", "teacher", "hod", "student", "moderator", "employee"}
 
 
 def _admin_pick_primary_education_row(supabase, profile_id: str) -> Optional[dict]:
@@ -7639,7 +7640,7 @@ def update_user_role(auth_user_id: str, payload: RoleUpdateIn, authorization: Op
             if getattr(del_res, 'error', None):
                 raise HTTPException(status_code=500, detail=f"Role demote failed: {del_res.error}")
         # For non-admin roles we can store or remove row (choose store for non-student roles)
-        if desired in {"teacher", "moderator", "employee"}:
+        if desired in {"teacher", "hod", "moderator", "employee"}:
             up_res = supabase.table('admin_roles').upsert({"auth_user_id": auth_user_id, "role": desired}).execute()
             if getattr(up_res, 'error', None):
                 raise HTTPException(status_code=500, detail=f"Role update failed: {up_res.error}")
@@ -7775,9 +7776,111 @@ def _require_teacher(authorization: Optional[str]):
         raise HTTPException(status_code=500, detail=f"Supabase error (role check): {role_q.error}")
     data = role_q.data or []
     role = data[0].get("role") if data else "student"
-    if role not in {"teacher","admin"}:  # admins also allowed
+    if role not in {"teacher", "hod", "admin"}:  # admins + hod also allowed
         raise HTTPException(status_code=403, detail="Teacher role required")
     return uid
+
+
+def _require_hod(authorization: Optional[str]) -> str:
+    """Require a user to be HOD (or admin).
+
+    This uses `public.admin_roles.role` and expects HOD users to have `role='hod'`.
+    """
+    uid, _ = _get_auth_user(authorization)
+    supabase = get_service_client()
+    role_q = supabase.table("admin_roles").select("role").eq("auth_user_id", uid).limit(1).execute()
+    if getattr(role_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (role check): {role_q.error}")
+    data = role_q.data or []
+    role = data[0].get("role") if data else "student"
+    if role not in {"hod", "admin"}:
+        raise HTTPException(status_code=403, detail="HOD role required")
+    return uid
+
+
+def _hod_scope_departments(supabase: Client, hod_user_id: str) -> Tuple[Optional[str], List[str]]:
+    """Return (college_id, department_ids) for the HOD.
+
+    Priority:
+      1) `public.hod_departments` rows
+      2) fallback: `public.teacher_profiles.department_id`
+      3) fallback: `public.teacher_applications.department_id`
+    """
+    # 1) explicit mapping table (supports multiple departments)
+    dept_ids: List[str] = []
+    try:
+        q = supabase.table("hod_departments").select("department_id").eq("hod_user_id", hod_user_id).limit(200).execute()
+        if not getattr(q, "error", None) and q.data:
+            dept_ids = [r.get("department_id") for r in (q.data or []) if r.get("department_id")]
+    except Exception:
+        dept_ids = []
+
+    college_id: Optional[str] = None
+    # Resolve college/department from teacher_profiles or application
+    prof = supabase.table("teacher_profiles").select("college_id,department_id").eq("auth_user_id", hod_user_id).limit(1).execute()
+    if not getattr(prof, "error", None) and prof.data:
+        college_id = prof.data[0].get("college_id") or None
+        if not dept_ids and prof.data[0].get("department_id"):
+            dept_ids = [prof.data[0].get("department_id")]
+    if not college_id or not dept_ids:
+        app = supabase.table("teacher_applications").select("college_id,department_id").eq("auth_user_id", hod_user_id).limit(1).execute()
+        if not getattr(app, "error", None) and app.data:
+            college_id = college_id or (app.data[0].get("college_id") or None)
+            if not dept_ids and app.data[0].get("department_id"):
+                dept_ids = [app.data[0].get("department_id")]
+
+    # De-dupe, preserve order
+    seen: Set[str] = set()
+    unique: List[str] = []
+    for d in dept_ids:
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        unique.append(d)
+    return college_id, unique
+
+
+def _build_hod_ai_agent() -> AssistantAgent:
+    system = """You are an assistant for a Head of Department (HOD).
+
+Rules:
+- Be practical and concise.
+- Use only the provided data; do not invent numbers.
+- If data is missing, explicitly say what is missing.
+- Output Markdown with short headings and bullets.
+"""
+    return AssistantAgent(
+        "paperx_hod_agent",
+        model_client=gemini_model_client,
+        system_message=system,
+    )
+
+
+def _hod_ai_generate_markdown(user_prompt: str) -> str:
+    """Generate markdown text for HOD pages using configured LLM.
+
+    Falls back to a deterministic template if LLM isn't configured.
+    """
+    try:
+        if not (os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")):
+            raise RuntimeError("No AI API key configured")
+        agent = _build_hod_ai_agent()
+        result = _run_assistant_blocking(agent, user_prompt)
+        content = result.messages[-1].content
+        return str(content or "").strip() or "(empty AI response)"
+    except Exception as e:
+        # Safe fallback: still return something useful
+        return "\n".join([
+            "# HOD Assistant (Fallback)",
+            "", 
+            "AI provider is not configured or failed.",
+            f"Error: {str(e)}",
+            "", 
+            "## Suggested Next Actions",
+            "- Review pending teacher applications in your department",
+            "- Check unassigned/overloaded classes",
+            "- Schedule a short staff sync (15–20 mins)",
+        ])
 
 
 @teacher_router.post("/api/teacher/signup", summary="Teacher signup with ID card images (multipart)")
@@ -7865,6 +7968,193 @@ async def teacher_signup(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected signup error: {e}")
+
+
+@teacher_router.post("/api/hod/signup", summary="HOD signup (creates teacher + HOD role applications)")
+async def hod_signup(
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    name: str = Form(...),
+    college: Optional[str] = Form(None),
+    department: Optional[str] = Form(None),
+    motivation: Optional[str] = Form(None),
+    id_card_front: UploadFile = File(...),
+    id_card_back: UploadFile = File(...),
+):
+    """HOD-only signup flow.
+
+    Creates:
+      - public.teacher_applications (pending)
+      - public.hod_role_applications (pending)
+
+    Admin later reviews hod_role_applications and assigns role='hod'.
+    """
+    if password != confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    allowed = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+    if id_card_front.content_type not in allowed or id_card_back.content_type not in allowed:
+        raise HTTPException(status_code=400, detail="ID card images must be png/jpg/webp")
+    anon_client = get_anon_client()
+    if not anon_client:
+        raise HTTPException(status_code=500, detail="Auth disabled")
+    try:
+        auth_res = anon_client.auth.sign_up({"email": email, "password": password})
+        auth_user_id = _get_user_id_from_auth_response(auth_res)
+        if not auth_user_id:
+            raise HTTPException(status_code=400, detail="Failed to create auth user")
+        access_token = _extract_access_token(auth_res)
+        supabase = get_service_client()
+
+        college_id = None
+        department_id = None
+        if college:
+            try:
+                college_id = str(_resolve_college_id_by_name(college))
+            except Exception:
+                college_id = None
+        if department and college_id:
+            try:
+                department_id = str(_resolve_department_id(uuid.UUID(college_id), department.upper()))
+            except Exception:
+                department_id = None
+
+        front_bytes = await id_card_front.read()
+        back_bytes = await id_card_back.read()
+        if len(front_bytes) > 5 * 1024 * 1024 or len(back_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
+
+        front_ext = Path(id_card_front.filename or "front").suffix.lower() or ".jpg"
+        back_ext = Path(id_card_back.filename or "back").suffix.lower() or ".jpg"
+        front_name = f"{auth_user_id}_front{front_ext}"
+        back_name = f"{auth_user_id}_back{back_ext}"
+        front_content_type = id_card_front.content_type or "image/jpeg"
+        back_content_type = id_card_back.content_type or "image/jpeg"
+        _storage_upload_bytes(supabase, "teacher", front_name, front_bytes, front_content_type)
+        _storage_upload_bytes(supabase, "teacher", back_name, back_bytes, back_content_type)
+        front_url = _storage_public_url(supabase, "teacher", front_name)
+        back_url = _storage_public_url(supabase, "teacher", back_name)
+
+        # Always create a teacher application too (so HOD is also a teacher).
+        ins_teacher = supabase.table("teacher_applications").insert({
+            "auth_user_id": auth_user_id,
+            "email": email,
+            "name": name,
+            "college_id": college_id,
+            "department_id": department_id,
+            "subjects": [],
+            "id_card_front_path": front_url,
+            "id_card_back_path": back_url,
+            "status": "pending",
+        }).execute()
+        if getattr(ins_teacher, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (teacher application insert): {ins_teacher.error}")
+
+        ins_hod = supabase.table("hod_role_applications").insert({
+            "auth_user_id": auth_user_id,
+            "email": email,
+            "name": name,
+            "college_id": college_id,
+            "department_id": department_id,
+            "motivation": motivation,
+            "id_card_front_path": front_url,
+            "id_card_back_path": back_url,
+            "status": "pending",
+        }).execute()
+        if getattr(ins_hod, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (hod application insert): {ins_hod.error}")
+
+        return {"message": "HOD application submitted", "access_token": access_token, "user_id": auth_user_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected signup error: {e}")
+
+
+class HodRoleApproveIn(BaseModel):
+    status: str = Field(..., description="approved|rejected")
+    notes: Optional[str] = None
+
+
+@teacher_router.get("/api/admin/hod-applications", summary="Admin: list HOD role applications")
+def list_hod_role_applications(status: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    supabase = get_service_client()
+    query = supabase.table("hod_role_applications").select("*").order("created_at", desc=True)
+    if status:
+        query = query.eq("status", status)
+    res = query.execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (list hod apps): {res.error}")
+    return {"applications": res.data or []}
+
+
+@teacher_router.post("/api/admin/hod-applications/{application_id}/review", summary="Admin: approve or reject a HOD role application")
+def review_hod_role_application(application_id: str, payload: HodRoleApproveIn, authorization: Optional[str] = Header(default=None)):
+    admin_uid, _ = _require_admin(authorization)
+    status = (payload.status or "").strip().lower()
+    if status not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Invalid status (approved|rejected)")
+    supabase = get_service_client()
+
+    app_q = supabase.table("hod_role_applications").select("auth_user_id,status,department_id").eq("id", application_id).limit(1).execute()
+    if getattr(app_q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (fetch hod app): {app_q.error}")
+    if not app_q.data:
+        raise HTTPException(status_code=404, detail="HOD application not found")
+    row = app_q.data[0]
+    target_uid = row.get("auth_user_id")
+    department_id = row.get("department_id")
+
+    upd = supabase.table("hod_role_applications").update({
+        "status": status,
+        "notes": payload.notes,
+        "reviewed_by": admin_uid,
+        "reviewed_at": datetime.utcnow().isoformat(),
+    }).eq("id", application_id).execute()
+    if getattr(upd, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (update hod app): {upd.error}")
+
+    if status == "approved" and target_uid:
+        # Ensure teacher application is approved and profile is synced.
+        try:
+            tapp = supabase.table("teacher_applications").select("id,status").eq("auth_user_id", target_uid).limit(1).execute()
+            if not getattr(tapp, "error", None) and tapp.data:
+                if tapp.data[0].get("status") != "approved":
+                    supabase.table("teacher_applications").update({
+                        "status": "approved",
+                        "notes": (payload.notes or ""),
+                        "reviewed_by": admin_uid,
+                        "reviewed_at": datetime.utcnow().isoformat(),
+                    }).eq("id", tapp.data[0].get("id")).execute()
+        except Exception:
+            pass
+
+        try:
+            _ensure_teacher_role(target_uid)
+        except Exception:
+            pass
+        try:
+            _sync_teacher_profile_from_application(supabase, target_uid)
+        except Exception:
+            pass
+
+        # Assign HOD role.
+        try:
+            supabase.table("admin_roles").upsert({"auth_user_id": target_uid, "role": "hod"}).execute()
+        except Exception:
+            pass
+
+        # Map HOD to their department.
+        if department_id:
+            try:
+                existing = supabase.table("hod_departments").select("id").eq("hod_user_id", target_uid).eq("department_id", department_id).limit(1).execute()
+                if not getattr(existing, "error", None) and not (existing.data or []):
+                    supabase.table("hod_departments").insert({"hod_user_id": target_uid, "department_id": department_id}).execute()
+            except Exception:
+                pass
+
+    return {"ok": True, "application_id": application_id, "status": status}
 
 
 @teacher_router.get("/api/teacher/applications", summary="Admin: list teacher applications")
@@ -8590,7 +8880,55 @@ async def get_teacher_profile(
         degree_fut = asyncio.to_thread(_sel, "degrees", degree_ids, "id,name")
         dept_fut = asyncio.to_thread(_sel, "departments", dept_ids, "id,name")
         college_fut = asyncio.to_thread(_sel, "colleges", college_ids, "id,name")
-        batch_map, degree_map, dept_map, college_map = await asyncio.gather(batch_fut, degree_fut, dept_fut, college_fut)
+        
+        # Also fetch student counts in parallel
+        async def _fetch_student_counts():
+            # Gather unique combinations to query
+            keys = set()
+            for c in classes:
+                bid = str(c.get("batch_id")) if c.get("batch_id") else None
+                sec = str(c.get("section")) if c.get("section") else None
+                sem = int(c.get("semester")) if c.get("semester") else None
+                if bid and sec and sem:
+                    keys.add((bid, sec, sem))
+            
+            if not keys:
+                return {}
+            
+            # We can't easily do a precise "IN" query for tuples in Supabase/PostgREST without a stored procedure 
+            # or complex OR filtering which might hit URL length limits.
+            # Instead, we'll fetch students filter by the set of batch_ids (which is usually small)
+            # and then aggregate in memory. This is generally safe as a teacher doesn't have thousands of classes.
+            relevant_batch_ids = {k[0] for k in keys}
+            if not relevant_batch_ids:
+                return {}
+            
+            try:
+                # Fetch minimal fields for counting
+                loop = asyncio.get_running_loop()
+                res = await loop.run_in_executor(None, lambda: supabase.table("user_education")
+                    .select("batch_id,section,current_semester")
+                    .in_("batch_id", list(relevant_batch_ids))
+                    .execute())
+                
+                if getattr(res, "error", None):
+                    return {}
+                
+                rows = res.data or []
+                counts = {}
+                for r in rows:
+                    b = str(r.get("batch_id"))
+                    s = str(r.get("section"))
+                    sm = int(r.get("current_semester") or 0)
+                    k = f"{b}|{s}|{sm}"
+                    counts[k] = counts.get(k, 0) + 1
+                return counts
+            except Exception:
+                return {}
+
+        batch_map, degree_map, dept_map, college_map, student_counts = await asyncio.gather(
+            batch_fut, degree_fut, dept_fut, college_fut, _fetch_student_counts()
+        )
 
         for c in classes:
             bid = c.get("batch_id"); b = batch_map.get(bid)
@@ -8602,6 +8940,16 @@ async def get_teacher_profile(
                 c["department_name"] = dept_map.get(c.get("department_id"), {}).get("name")
             if c.get("college_id"):
                 c["college_name"] = college_map.get(c.get("college_id"), {}).get("name")
+            
+            # Map student count
+            bid_str = str(c.get("batch_id")) if c.get("batch_id") else None
+            sec_str = str(c.get("section")) if c.get("section") else None
+            sem_int = int(c.get("semester")) if c.get("semester") else None
+            if bid_str and sec_str and sem_int:
+               c["student_count"] = student_counts.get(f"{bid_str}|{sec_str}|{sem_int}", 0)
+            else:
+               c["student_count"] = 0
+
             sem = c.get("semester"); subj = c.get("subject")
             c["label"] = f"Sem {sem}: {subj}" if sem and subj else (subj or "Class")
         return classes
@@ -8926,6 +9274,1004 @@ def get_teacher_academics_mine(authorization: Optional[str] = Header(default=Non
         "batches": batches,
         "degrees": degrees,
     }
+
+
+# ================= HOD Portal (Department-level) ==================
+
+class HodClassReassignIn(BaseModel):
+    new_teacher_user_id: uuid.UUID
+
+
+class HodClassAssignIn(BaseModel):
+    department_id: uuid.UUID
+    batch_id: uuid.UUID
+    semester: int = Field(ge=1, le=12)
+    section: Optional[str] = None
+    subject_id: uuid.UUID
+    subject: str
+    new_teacher_user_id: uuid.UUID
+
+
+class HodStaffRemoveIn(BaseModel):
+    teacher_user_id: uuid.UUID
+    department_id: Optional[uuid.UUID] = None
+
+
+class HodApplicationReviewIn(BaseModel):
+    recommendation: Literal["approve", "reject", "review"] = "review"
+    note: Optional[str] = None
+
+
+class HodAiAgendaIn(BaseModel):
+    focus: Optional[str] = None
+    days: int = Field(default=14, ge=1, le=180)
+
+
+def _enrich_departments(supabase: Client, department_ids: List[str]) -> List[Dict[str, Any]]:
+    if not department_ids:
+        return []
+    d = supabase.table("departments").select("id,name,college_id,degree_id").in_("id", department_ids).order("name").execute()
+    if getattr(d, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (departments lookup): {d.error}")
+    return d.data or []
+
+
+@teacher_router.get("/api/hod/me", summary="HOD: current scope + departments")
+def hod_me(authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    college_id, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No department scope configured for this HOD")
+
+    # Core profile
+    core: Dict[str, Any] = {"auth_user_id": hod_user_id, "role": "hod"}
+    tprof = supabase.table("teacher_profiles").select("name,email,college_id,department_id,profile_image_url").eq("auth_user_id", hod_user_id).limit(1).execute()
+    if not getattr(tprof, "error", None) and tprof.data:
+        row = tprof.data[0]
+        for k in ["name", "email", "college_id", "department_id"]:
+            if row.get(k) is not None:
+                core[k] = row.get(k)
+        if row.get("profile_image_url"):
+            core["avatar_url"] = row.get("profile_image_url")
+
+    # Role readback (admin can be HOD too)
+    role_q = supabase.table("admin_roles").select("role").eq("auth_user_id", hod_user_id).limit(1).execute()
+    if not getattr(role_q, "error", None) and role_q.data:
+        core["role"] = role_q.data[0].get("role") or core.get("role")
+
+    departments = _enrich_departments(supabase, dept_ids)
+
+    college = None
+    if college_id:
+        cres = supabase.table("colleges").select("id,name,logo_url").eq("id", str(college_id)).limit(1).execute()
+        if not getattr(cres, "error", None) and cres.data:
+            college = cres.data[0]
+
+    return {
+        "hod": core,
+        "scope": {"college_id": college_id, "department_ids": dept_ids},
+        "departments": departments,
+        "college": college,
+    }
+
+
+@teacher_router.get("/api/hod/classes", summary="HOD: list classes in my departments")
+def hod_list_classes(
+    authorization: Optional[str] = Header(default=None),
+    department_id: Optional[str] = Query(default=None),
+    semester: Optional[int] = Query(default=None, ge=1, le=12),
+    batch_id: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None, description="Search in subject/section"),
+    current_only: bool = Query(default=False, description="If true, restrict to current batch+semester pairs from hod_batch_management"),
+):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+    if department_id:
+        if department_id not in dept_ids:
+            raise HTTPException(status_code=403, detail="Department out of scope")
+        dept_ids = [department_id]
+
+    allowed_pairs: Optional[set[str]] = None
+    allowed_batch_ids: Optional[List[str]] = None
+    allowed_semesters: Optional[List[int]] = None
+
+    if current_only:
+        mg = (
+            supabase.table("hod_batch_management")
+            .select(
+                "department_id,first_year_batch_id,first_year_sem,second_year_batch_id,second_year_sem,third_year_batch_id,third_year_sem,final_year_batch_id,final_year_sem"
+            )
+            .in_("department_id", dept_ids)
+            .execute()
+        )
+        if getattr(mg, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (hod batch management): {mg.error}")
+
+        rows = mg.data or []
+        pairs: set[str] = set()
+        bset: set[str] = set()
+        sset: set[int] = set()
+
+        def _add(bid: Any, semv: Any) -> None:
+            if not bid or not semv:
+                return
+            try:
+                sem_i = int(semv)
+            except Exception:
+                return
+            bid_s = str(bid)
+            pairs.add(f"{bid_s}|{sem_i}")
+            bset.add(bid_s)
+            sset.add(sem_i)
+
+        for r in rows:
+            _add(r.get("first_year_batch_id"), r.get("first_year_sem"))
+            _add(r.get("second_year_batch_id"), r.get("second_year_sem"))
+            _add(r.get("third_year_batch_id"), r.get("third_year_sem"))
+            _add(r.get("final_year_batch_id"), r.get("final_year_sem"))
+
+        if not pairs:
+            return {"total": 0, "classes": [], "meta": {"current_only": True, "has_mapping": False}}
+
+        allowed_pairs = pairs
+        allowed_batch_ids = sorted(bset)
+        allowed_semesters = sorted(sset)
+
+        # If caller asked for a specific batch/semester, validate it's still within the allowed set.
+        if batch_id and batch_id not in allowed_batch_ids:
+            return {"total": 0, "classes": [], "meta": {"current_only": True, "has_mapping": True}}
+        if semester is not None and semester not in allowed_semesters:
+            return {"total": 0, "classes": [], "meta": {"current_only": True, "has_mapping": True}}
+
+    query = supabase.table("teacher_classes").select(
+        "id,teacher_user_id,batch_id,semester,subject,subject_id,section,department_id"
+    ).in_("department_id", dept_ids)
+
+    if current_only and allowed_batch_ids and allowed_semesters:
+        query = query.in_("batch_id", allowed_batch_ids).in_("semester", allowed_semesters)
+    if semester is not None:
+        query = query.eq("semester", semester)
+    if batch_id:
+        query = query.eq("batch_id", batch_id)
+    # NOTE: postgrest ilike is supported via .ilike, but we keep safe fallback by client-side filtering
+    res = query.order("id", desc=True).limit(1200).execute()
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (hod classes): {res.error}")
+    classes = res.data or []
+
+    if current_only and allowed_pairs is not None:
+        filtered = []
+        for c in classes:
+            bid = c.get("batch_id")
+            semv = c.get("semester")
+            if not bid or not semv:
+                continue
+            try:
+                sem_i = int(semv)
+            except Exception:
+                continue
+            if f"{str(bid)}|{sem_i}" in allowed_pairs:
+                filtered.append(c)
+        classes = filtered
+
+    # client-side filter for q (fast enough for <=1000)
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            def _hit(row: Dict[str, Any]) -> bool:
+                return needle in str(row.get("subject") or "").lower() or needle in str(row.get("section") or "").lower()
+            classes = [c for c in classes if _hit(c)]
+
+    # Students count (fast): count user_education entries matching batch + section + current_semester
+    students_count_map: Dict[str, int] = {}
+    try:
+        rel_batch_ids = sorted({str(c.get("batch_id")) for c in classes if c.get("batch_id")})
+        rel_sems = sorted({int(c.get("semester")) for c in classes if c.get("semester")})
+        if rel_batch_ids and rel_sems:
+            edu = (
+                supabase.table("user_education")
+                .select("batch_id,section,current_semester")
+                .in_("department_id", dept_ids)
+                .in_("batch_id", rel_batch_ids)
+                .in_("current_semester", rel_sems)
+                .limit(20000)
+                .execute()
+            )
+            if not getattr(edu, "error", None):
+                for r in edu.data or []:
+                    bid = r.get("batch_id")
+                    sec = r.get("section")
+                    semv = r.get("current_semester")
+                    if not bid or not sec or not semv:
+                        continue
+                    try:
+                        sem_i = int(semv)
+                    except Exception:
+                        continue
+                    k = f"{str(bid)}|{str(sec)}|{sem_i}"
+                    students_count_map[k] = students_count_map.get(k, 0) + 1
+    except Exception:
+        students_count_map = {}
+
+    # Ensure we display all subjects for each section/semester, even when no teacher is assigned.
+    # We do this by reading syllabus_courses (per batch + semester) and synthesizing virtual rows.
+    if current_only and allowed_batch_ids and allowed_semesters:
+        try:
+            # Map: (batch_id, semester) -> list of courses
+            sc = (
+                supabase.table("syllabus_courses")
+                .select("id,batch_id,semester,course_code,title,type")
+                .in_("batch_id", allowed_batch_ids)
+                .in_("semester", allowed_semesters)
+                .limit(5000)
+                .execute()
+            )
+            if not getattr(sc, "error", None):
+                courses_by_pair: Dict[str, List[Dict[str, Any]]] = {}
+                courses_by_code: Dict[str, Dict[str, Any]] = {}
+                courses_by_title: Dict[str, Dict[str, Any]] = {}
+                valid_course_ids: Dict[str, set[str]] = {}
+
+                def _norm_title(val: Any) -> str:
+                    s = str(val or "").strip().lower()
+                    s = re.sub(r"\s+", " ", s)
+                    s = re.sub(r"[^a-z0-9 ]+", "", s)
+                    return s.strip()
+
+                def _extract_code(val: Any) -> Optional[str]:
+                    s = str(val or "").strip().upper()
+                    # Match code at start: AMHS405, AMPC401A, etc.
+                    m = re.match(r"^([A-Z]{2,}\d{2,}[A-Z]?)\b", s)
+                    return m.group(1) if m else None
+
+                for cr in sc.data or []:
+                    bid = cr.get("batch_id")
+                    semv = cr.get("semester")
+                    if not bid or not semv:
+                        continue
+                    try:
+                        sem_i = int(semv)
+                    except Exception:
+                        continue
+                    key = f"{str(bid)}|{sem_i}"
+                    courses_by_pair.setdefault(key, []).append(cr)
+                    if cr.get("id"):
+                        valid_course_ids.setdefault(key, set()).add(str(cr.get("id")))
+
+                    code = (cr.get("course_code") or "").strip().upper()
+                    if code:
+                        courses_by_code[f"{str(bid)}|{sem_i}|{code}"] = cr
+                    title_norm = _norm_title(cr.get("title"))
+                    if title_norm:
+                        courses_by_title[f"{str(bid)}|{sem_i}|{title_norm}"] = cr
+
+                # Backfill missing subject_id on existing teacher_classes rows.
+                # This avoids creating a virtual Unassigned row when the class is actually assigned,
+                # but was saved without subject_id (legacy data) or with formatting-only subject text.
+                for c in classes:
+                    bid = c.get("batch_id")
+                    semv = c.get("semester")
+                    if not bid or not semv:
+                        continue
+                    try:
+                        sem_i = int(semv)
+                    except Exception:
+                        continue
+
+                    pair_key = f"{str(bid)}|{sem_i}"
+                    sid = c.get("subject_id")
+                    # Only attempt remap when missing OR clearly invalid for this batch+semester syllabus set.
+                    if sid and str(sid) in (valid_course_ids.get(pair_key) or set()):
+                        continue
+
+                    subj_text = c.get("subject")
+                    code = _extract_code(subj_text)
+                    match = None
+                    if code:
+                        match = courses_by_code.get(f"{str(bid)}|{sem_i}|{code}")
+
+                    if not match:
+                        # Try title-based match, stripping any leading code/dash.
+                        raw = str(subj_text or "")
+                        if "—" in raw:
+                            raw = raw.split("—", 1)[1]
+                        elif "-" in raw:
+                            raw = raw.split("-", 1)[1]
+                        title_norm = _norm_title(raw)
+                        if title_norm:
+                            match = courses_by_title.get(f"{str(bid)}|{sem_i}|{title_norm}")
+
+                    if match and match.get("id"):
+                        c["subject_id"] = str(match.get("id"))
+                        # Prefer the canonical display form with course code if available.
+                        cc = (match.get("course_code") or "").strip()
+                        tt = match.get("title") or c.get("subject")
+                        if cc and tt:
+                            c["subject"] = f"{cc} — {tt}"
+
+                # Existing: (batch_id, semester, section) -> set(course_id)
+                existing_course_ids: Dict[str, set[str]] = {}
+                section_keys: set[str] = set()
+                for c in classes:
+                    bid = c.get("batch_id")
+                    semv = c.get("semester")
+                    sec = c.get("section")
+                    if not bid or not semv or not sec:
+                        continue
+                    try:
+                        sem_i = int(semv)
+                    except Exception:
+                        continue
+                    sk = f"{str(bid)}|{sem_i}|{str(sec)}"
+                    section_keys.add(sk)
+                    sid = c.get("subject_id")
+                    if sid:
+                        existing_course_ids.setdefault(sk, set()).add(str(sid))
+
+                virtual_rows: List[Dict[str, Any]] = []
+                for sk in sorted(section_keys):
+                    bid, sem_s, sec = sk.split("|", 2)
+                    try:
+                        sem_i = int(sem_s)
+                    except Exception:
+                        continue
+                    course_list = courses_by_pair.get(f"{bid}|{sem_i}") or []
+                    if not course_list:
+                        continue
+                    have = existing_course_ids.get(sk, set())
+                    for cr in course_list:
+                        cid = cr.get("id")
+                        if not cid:
+                            continue
+                        cid_s = str(cid)
+                        if cid_s in have:
+                            continue
+                        title = cr.get("title") or "Subject"
+                        code = cr.get("course_code")
+                        subj = f"{code} — {title}" if code else str(title)
+                        virtual_id = f"virtual:{cid_s}:{bid}:{sem_i}:{sec}"
+                        dept_guess = None
+                        # Best-effort: infer department from existing rows of same section key
+                        for c in classes:
+                            if str(c.get("batch_id")) == bid and int(c.get("semester") or 0) == sem_i and str(c.get("section")) == sec:
+                                dept_guess = c.get("department_id")
+                                break
+                        row = {
+                            "id": virtual_id,
+                            "virtual": True,
+                            "teacher_user_id": None,
+                            "batch_id": bid,
+                            "semester": sem_i,
+                            "subject": subj,
+                            "subject_id": cid_s,
+                            "section": sec,
+                            "department_id": dept_guess,
+                        }
+                        virtual_rows.append(row)
+
+                if virtual_rows:
+                    classes.extend(virtual_rows)
+        except Exception:
+            pass
+
+    teacher_ids = sorted({c.get("teacher_user_id") for c in classes if c.get("teacher_user_id")})
+    batch_ids = sorted({c.get("batch_id") for c in classes if c.get("batch_id")})
+    dept_ids2 = sorted({c.get("department_id") for c in classes if c.get("department_id")})
+
+    teacher_map: Dict[str, Dict[str, Any]] = {}
+    if teacher_ids:
+        t = supabase.table("teacher_profiles").select("auth_user_id,name,email,profile_image_url,department_id").in_("auth_user_id", teacher_ids).execute()
+        if not getattr(t, "error", None):
+            for r in t.data or []:
+                teacher_map[str(r.get("auth_user_id"))] = r
+
+    batch_map: Dict[str, Dict[str, Any]] = {}
+    if batch_ids:
+        b = supabase.table("batches").select("id,from_year,to_year,department_id").in_("id", batch_ids).execute()
+        if not getattr(b, "error", None):
+            for r in b.data or []:
+                batch_map[str(r.get("id"))] = r
+
+    dept_map: Dict[str, Dict[str, Any]] = {}
+    if dept_ids2:
+        d = supabase.table("departments").select("id,name").in_("id", dept_ids2).execute()
+        if not getattr(d, "error", None):
+            for r in d.data or []:
+                dept_map[str(r.get("id"))] = r
+
+    # attach derived fields
+    for c in classes:
+        # students count
+        try:
+            bid = c.get("batch_id")
+            sec = c.get("section")
+            semv = c.get("semester")
+            if bid and sec and semv:
+                sem_i = int(semv)
+                c["students_count"] = students_count_map.get(f"{str(bid)}|{str(sec)}|{sem_i}", 0)
+        except Exception:
+            pass
+
+        tid = str(c.get("teacher_user_id")) if c.get("teacher_user_id") else None
+        if tid and tid in teacher_map:
+            tp = teacher_map[tid]
+            c["teacher_name"] = tp.get("name")
+            c["teacher_email"] = tp.get("email")
+            c["teacher_avatar_url"] = tp.get("profile_image_url")
+        bid = str(c.get("batch_id")) if c.get("batch_id") else None
+        if bid and bid in batch_map:
+            br = batch_map[bid]
+            fy, ty = br.get("from_year"), br.get("to_year")
+            c["batch_label"] = f"{fy}-{ty}" if fy and ty else None
+        did = str(c.get("department_id")) if c.get("department_id") else None
+        if did and did in dept_map:
+            c["department_name"] = dept_map[did].get("name")
+        sem = c.get("semester")
+        subj = c.get("subject")
+        c["label"] = f"Sem {sem}: {subj}" if sem and subj else (subj or "Class")
+
+    meta: Dict[str, Any] = {}
+    if current_only:
+        meta = {"current_only": True, "has_mapping": True}
+    return {"total": len(classes), "classes": classes, "meta": meta}
+
+
+@teacher_router.get("/api/hod/batches", summary="HOD: list batches in my departments")
+def hod_list_batches(
+    authorization: Optional[str] = Header(default=None),
+    department_id: Optional[str] = Query(default=None),
+):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+    if department_id:
+        if department_id not in dept_ids:
+            raise HTTPException(status_code=403, detail="Department out of scope")
+        dept_ids = [department_id]
+
+    res = (
+        supabase.table("batches")
+        .select("id,college_id,department_id,from_year,to_year,created_at")
+        .in_("department_id", dept_ids)
+        .order("from_year", desc=True)
+        .limit(2000)
+        .execute()
+    )
+    if getattr(res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (hod batches): {res.error}")
+    batches = res.data or []
+
+    # Attach department names for UI.
+    dept_map: Dict[str, str] = {}
+    try:
+        d = supabase.table("departments").select("id,name").in_("id", list({str(b.get("department_id")) for b in batches if b.get("department_id")}) or ["00000000-0000-0000-0000-000000000000"]).execute()
+        if not getattr(d, "error", None):
+            for r in d.data or []:
+                dept_map[str(r.get("id"))] = r.get("name")
+    except Exception:
+        pass
+
+    for b in batches:
+        fy, ty = b.get("from_year"), b.get("to_year")
+        b["label"] = f"{fy}-{ty}" if fy and ty else None
+        did = b.get("department_id")
+        if did:
+            b["department_name"] = dept_map.get(str(did))
+
+    return {"total": len(batches), "batches": batches}
+
+
+class HodBatchManagementIn(BaseModel):
+    department_id: str
+    first_year_batch_id: Optional[str] = None
+    first_year_sem: Optional[int] = None
+    second_year_batch_id: Optional[str] = None
+    second_year_sem: Optional[int] = None
+    third_year_batch_id: Optional[str] = None
+    third_year_sem: Optional[int] = None
+    final_year_batch_id: Optional[str] = None
+    final_year_sem: Optional[int] = None
+
+
+@teacher_router.get("/api/hod/batch-management", summary="HOD: get batch management selections")
+def hod_get_batch_management(
+    authorization: Optional[str] = Header(default=None),
+    department_id: Optional[str] = Query(default=None),
+):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+    if department_id:
+        if department_id not in dept_ids:
+            raise HTTPException(status_code=403, detail="Department out of scope")
+        dept_ids = [department_id]
+
+    q = (
+        supabase.table("hod_batch_management")
+        .select(
+            "department_id,first_year_batch_id,first_year_sem,second_year_batch_id,second_year_sem,third_year_batch_id,third_year_sem,final_year_batch_id,final_year_sem,updated_at"
+        )
+        .in_("department_id", dept_ids)
+        .execute()
+    )
+    if getattr(q, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (get batch management): {q.error}")
+    rows = q.data or []
+    # Return as map for easy UI.
+    by_dept: Dict[str, Any] = {}
+    for r in rows:
+        by_dept[str(r.get("department_id"))] = r
+    return {"departments": dept_ids, "management": by_dept}
+
+
+@teacher_router.post("/api/hod/batch-management", summary="HOD: update batch management selections")
+def hod_update_batch_management(payload: HodBatchManagementIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+    department_id = str(payload.department_id or "").strip()
+    if not department_id:
+        raise HTTPException(status_code=400, detail="department_id is required")
+    if department_id not in dept_ids:
+        raise HTTPException(status_code=403, detail="Department out of scope")
+
+    def _validate_sem(year_label: str, sem: Optional[int], allowed) -> None:
+        if sem is None:
+            return
+        if sem not in allowed:
+            raise HTTPException(status_code=400, detail=f"Invalid {year_label} semester")
+
+    _validate_sem("second_year_sem", payload.second_year_sem, {3, 4})
+    _validate_sem("third_year_sem", payload.third_year_sem, {5, 6})
+    _validate_sem("final_year_sem", payload.final_year_sem, {7, 8})
+
+    if payload.second_year_sem is not None and not payload.second_year_batch_id:
+        raise HTTPException(status_code=400, detail="Select second year batch")
+    if payload.third_year_sem is not None and not payload.third_year_batch_id:
+        raise HTTPException(status_code=400, detail="Select third year batch")
+    if payload.final_year_sem is not None and not payload.final_year_batch_id:
+        raise HTTPException(status_code=400, detail="Select final year batch")
+
+    # NOTE: First-year is managed by coordinators (not HOD). Never update or validate it here.
+    chosen = [payload.second_year_batch_id, payload.third_year_batch_id, payload.final_year_batch_id]
+    chosen = [c for c in chosen if c]
+    if chosen:
+        # Validate all chosen batches belong to this department.
+        bq = supabase.table("batches").select("id,department_id").in_("id", chosen).execute()
+        if getattr(bq, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (validate batches): {bq.error}")
+        found = {str(r.get("id")): str(r.get("department_id")) for r in (bq.data or [])}
+        for bid in chosen:
+            if str(bid) not in found:
+                raise HTTPException(status_code=400, detail=f"Invalid batch_id: {bid}")
+            if found[str(bid)] != department_id:
+                raise HTTPException(status_code=400, detail=f"Batch {bid} does not belong to department")
+
+    # Preserve any existing first-year mapping/semester.
+    # (Older clients might send null/empty and we must not clear coordinator-managed values.)
+    upsert_payload: Dict[str, Any] = {
+        "department_id": department_id,
+        "second_year_batch_id": payload.second_year_batch_id,
+        "second_year_sem": payload.second_year_sem,
+        "third_year_batch_id": payload.third_year_batch_id,
+        "third_year_sem": payload.third_year_sem,
+        "final_year_batch_id": payload.final_year_batch_id,
+        "final_year_sem": payload.final_year_sem,
+        "updated_by": hod_user_id,
+    }
+
+    up = supabase.table("hod_batch_management").upsert(upsert_payload, on_conflict="department_id").execute()
+    if getattr(up, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (update batch management): {up.error}")
+    return {"ok": True, "department_id": department_id}
+
+
+@teacher_router.get("/api/hod/staff", summary="HOD: list staff (teachers) in my departments")
+def hod_list_staff(
+    authorization: Optional[str] = Header(default=None),
+    q: Optional[str] = Query(default=None, description="Search by name/email"),
+    department_id: Optional[str] = Query(default=None, description="Filter to a single department (must be in HOD scope)"),
+):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    if department_id:
+        dep = str(department_id).strip()
+        if dep not in dept_ids:
+            raise HTTPException(status_code=403, detail="Department out of scope")
+        dept_ids = [dep]
+
+    needle = (q or "").strip()
+    needle_l = needle.lower()
+
+    tq = supabase.table("teacher_profiles").select(
+        "auth_user_id,name,email,department_id,college_id,profile_image_url,headline,updated_at"
+    ).in_("department_id", dept_ids)
+    if needle:
+        # Best-effort server-side search (name/email)
+        # Supabase: OR across columns
+        escaped = needle.replace(",", " ").strip()
+        tq = tq.or_(f"name.ilike.%{escaped}%,email.ilike.%{escaped}%")
+    staff_res = tq.order("updated_at", desc=True).limit(500).execute()
+    if getattr(staff_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (staff list): {staff_res.error}")
+    staff = staff_res.data or []
+
+    # Add quick workload estimate (class count)
+    teacher_ids = [str(r.get("auth_user_id")) for r in staff if r.get("auth_user_id")]
+    class_counts: Dict[str, int] = {tid: 0 for tid in teacher_ids}
+    if teacher_ids:
+        # Supabase doesn't give per-user counts in one query; do a lightweight scan instead (bounded)
+        cls_rows = supabase.table("teacher_classes").select("teacher_user_id").in_("teacher_user_id", teacher_ids).limit(5000).execute()
+        if not getattr(cls_rows, "error", None):
+            for row in cls_rows.data or []:
+                tid = str(row.get("teacher_user_id") or "")
+                if tid in class_counts:
+                    class_counts[tid] += 1
+
+    # Fallback client-side search (in case OR/ilike isn't supported by client/table)
+    if needle_l:
+        def _hit(row: Dict[str, Any]) -> bool:
+            return needle_l in str(row.get("name") or "").lower() or needle_l in str(row.get("email") or "").lower()
+        staff = [r for r in staff if _hit(r)]
+
+    for r in staff:
+        tid = str(r.get("auth_user_id") or "")
+        r["classes_count"] = class_counts.get(tid, 0)
+
+    return {"total": len(staff), "staff": staff}
+
+
+@teacher_router.post("/api/hod/staff/remove", summary="HOD: remove a staff member from a department and unassign their classes")
+def hod_remove_staff(payload: HodStaffRemoveIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    if str(payload.teacher_user_id) == str(hod_user_id):
+        raise HTTPException(status_code=400, detail="You cannot remove yourself")
+
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    # Resolve staff department
+    prof = supabase.table("teacher_profiles").select("auth_user_id,department_id,college_id,name,email").eq(
+        "auth_user_id", str(payload.teacher_user_id)
+    ).limit(1).execute()
+    if getattr(prof, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (staff lookup): {prof.error}")
+    if not prof.data:
+        raise HTTPException(status_code=404, detail="Staff not found")
+
+    current_dept_id = prof.data[0].get("department_id")
+    target_dept_id = str(payload.department_id) if payload.department_id else (str(current_dept_id) if current_dept_id else None)
+    if not target_dept_id:
+        raise HTTPException(status_code=400, detail="Staff has no department")
+    if target_dept_id not in dept_ids:
+        raise HTTPException(status_code=403, detail="Staff out of scope")
+
+    # Count classes to be unassigned (bounded scan)
+    cls_rows = supabase.table("teacher_classes").select("id").eq("teacher_user_id", str(payload.teacher_user_id)).eq(
+        "department_id", target_dept_id
+    ).limit(5000).execute()
+    if getattr(cls_rows, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (classes scan): {cls_rows.error}")
+    classes_count = len(cls_rows.data or [])
+
+    # 1) Remove staff from the department
+    upd_prof = supabase.table("teacher_profiles").update({"department_id": None}).eq(
+        "auth_user_id", str(payload.teacher_user_id)
+    ).eq("department_id", target_dept_id).execute()
+    if getattr(upd_prof, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (remove staff from dept): {upd_prof.error}")
+
+    # 2) Unassign their classes (teacher_user_id -> NULL)
+    upd_cls = supabase.table("teacher_classes").update({"teacher_user_id": None}).eq(
+        "teacher_user_id", str(payload.teacher_user_id)
+    ).eq("department_id", target_dept_id).execute()
+    if getattr(upd_cls, "error", None):
+        err_txt = str(upd_cls.error)
+        hint = "Run packages/sql/hod_unassign_teacher_classes.sql to allow unassigned classes" if ("not-null" in err_txt.lower() or "null value" in err_txt.lower()) else None
+        if hint:
+            raise HTTPException(status_code=500, detail=f"Supabase error (unassign classes): {err_txt}. Hint: {hint}")
+        raise HTTPException(status_code=500, detail=f"Supabase error (unassign classes): {upd_cls.error}")
+
+    return {
+        "ok": True,
+        "teacher_user_id": str(payload.teacher_user_id),
+        "department_id": target_dept_id,
+        "classes_unassigned": classes_count,
+    }
+
+
+@teacher_router.post("/api/hod/classes/{class_id}/reassign", summary="HOD: reassign a class to another teacher")
+def hod_reassign_class(class_id: uuid.UUID, payload: HodClassReassignIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    cls = supabase.table("teacher_classes").select("id,department_id").eq("id", str(class_id)).limit(1).execute()
+    if getattr(cls, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (class lookup): {cls.error}")
+    if not cls.data:
+        raise HTTPException(status_code=404, detail="Class not found")
+    dept_id = cls.data[0].get("department_id")
+    if dept_id not in dept_ids:
+        raise HTTPException(status_code=403, detail="Class out of scope")
+
+    # Ensure the target teacher belongs to the same department (best-effort)
+    t = supabase.table("teacher_profiles").select("auth_user_id,department_id").eq("auth_user_id", str(payload.new_teacher_user_id)).limit(1).execute()
+    if not getattr(t, "error", None) and t.data:
+        if t.data[0].get("department_id") and t.data[0].get("department_id") != dept_id:
+            raise HTTPException(status_code=400, detail="Target teacher belongs to a different department")
+
+    upd = supabase.table("teacher_classes").update({"teacher_user_id": str(payload.new_teacher_user_id)}).eq("id", str(class_id)).execute()
+    if getattr(upd, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (reassign): {upd.error}")
+    return {"ok": True, "class_id": str(class_id), "new_teacher_user_id": str(payload.new_teacher_user_id)}
+
+
+@teacher_router.get("/api/hod/applications", summary="HOD: list teacher applications in my departments")
+def hod_list_teacher_applications(
+    authorization: Optional[str] = Header(default=None),
+    status: Optional[str] = Query(default=None, description="pending|approved|rejected"),
+):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    query = supabase.table("teacher_applications").select(
+        "id,auth_user_id,email,name,college_id,department_id,subjects,status,notes,reviewed_by,reviewed_at,created_at,updated_at"
+    ).in_("department_id", dept_ids)
+    if status:
+        query = query.eq("status", status)
+    apps_res = query.order("created_at", desc=True).limit(500).execute()
+    if getattr(apps_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (applications): {apps_res.error}")
+    apps = apps_res.data or []
+
+    # Attach HOD review notes if table exists
+    try:
+        app_ids = [a.get("id") for a in apps if a.get("id")]
+        review_map: Dict[str, Dict[str, Any]] = {}
+        if app_ids:
+            rres = supabase.table("hod_application_reviews").select("application_id,hod_user_id,recommendation,note,updated_at").eq("hod_user_id", hod_user_id).in_("application_id", app_ids).execute()
+            if not getattr(rres, "error", None):
+                for r in rres.data or []:
+                    review_map[str(r.get("application_id"))] = r
+        for a in apps:
+            rid = review_map.get(str(a.get("id")))
+            if rid:
+                a["hod_review"] = {
+                    "recommendation": rid.get("recommendation"),
+                    "note": rid.get("note"),
+                    "updated_at": rid.get("updated_at"),
+                }
+    except Exception:
+        pass
+
+    return {"total": len(apps), "applications": apps}
+
+
+@teacher_router.post("/api/hod/applications/{application_id}/review", summary="HOD: save recommendation note for an application")
+def hod_review_application(application_id: uuid.UUID, payload: HodApplicationReviewIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    app_res = supabase.table("teacher_applications").select("id,department_id").eq("id", str(application_id)).limit(1).execute()
+    if getattr(app_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (application lookup): {app_res.error}")
+    if not app_res.data:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if app_res.data[0].get("department_id") not in dept_ids:
+        raise HTTPException(status_code=403, detail="Application out of scope")
+
+    row = {
+        "application_id": str(application_id),
+        "hod_user_id": hod_user_id,
+        "recommendation": payload.recommendation,
+        "note": payload.note,
+    }
+    try:
+        up = supabase.table("hod_application_reviews").upsert(row).execute()
+        if getattr(up, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (save review): {up.error}")
+    except APIError as e:
+        raise HTTPException(status_code=500, detail=f"Supabase error (save review): {e}")
+
+@teacher_router.post("/api/hod/classes/assign", summary="HOD: assign a staff to an unassigned/virtual subject")
+def hod_assign_class(payload: HodClassAssignIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    dep_id = str(payload.department_id)
+    if dep_id not in dept_ids:
+        raise HTTPException(status_code=403, detail="Department out of scope")
+
+    # Validate batch belongs to department
+    bq = supabase.table("batches").select("id,department_id").eq("id", str(payload.batch_id)).limit(1).execute()
+    if getattr(bq, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (batch lookup): {bq.error}")
+    if not bq.data:
+        raise HTTPException(status_code=400, detail="Invalid batch")
+    if str(bq.data[0].get("department_id")) != dep_id:
+        raise HTTPException(status_code=400, detail="Batch does not belong to department")
+
+    # Validate syllabus course matches batch+semester
+    cq = supabase.table("syllabus_courses").select("id,batch_id,semester,course_code,title").eq("id", str(payload.subject_id)).limit(1).execute()
+    if getattr(cq, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (course lookup): {cq.error}")
+    if not cq.data:
+        raise HTTPException(status_code=400, detail="Invalid subject")
+    if str(cq.data[0].get("batch_id")) != str(payload.batch_id) or int(cq.data[0].get("semester") or 0) != int(payload.semester):
+        raise HTTPException(status_code=400, detail="Subject does not match batch/semester")
+
+    # Ensure the target teacher belongs to the same department (best-effort)
+    t = supabase.table("teacher_profiles").select("auth_user_id,department_id").eq("auth_user_id", str(payload.new_teacher_user_id)).limit(1).execute()
+    if getattr(t, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (teacher lookup): {t.error}")
+    if not t.data:
+        raise HTTPException(status_code=400, detail="Target staff not found")
+    if t.data[0].get("department_id") and str(t.data[0].get("department_id")) != dep_id:
+        raise HTTPException(status_code=400, detail="Target staff belongs to a different department")
+
+    # Department meta for insert
+    d = supabase.table("departments").select("id,college_id,degree_id").eq("id", dep_id).limit(1).execute()
+    if getattr(d, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (department lookup): {d.error}")
+    if not d.data:
+        raise HTTPException(status_code=400, detail="Invalid department")
+    college_id = d.data[0].get("college_id")
+    degree_id = d.data[0].get("degree_id")
+
+    sec = (payload.section or "").strip() or None
+
+    # Find existing matching class row
+    q = supabase.table("teacher_classes").select("id,teacher_user_id").eq("department_id", dep_id).eq("batch_id", str(payload.batch_id)).eq(
+        "semester", int(payload.semester)
+    ).eq("subject_id", str(payload.subject_id))
+    if sec is None:
+        q = q.is_("section", "null")
+    else:
+        q = q.eq("section", sec)
+    existing = q.limit(1).execute()
+    if getattr(existing, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (class lookup): {existing.error}")
+
+    if existing.data:
+        row = existing.data[0]
+        if row.get("teacher_user_id"):
+            raise HTTPException(status_code=409, detail="Class already assigned; use reassign")
+        upd = supabase.table("teacher_classes").update({"teacher_user_id": str(payload.new_teacher_user_id)}).eq("id", str(row.get("id"))).execute()
+        if getattr(upd, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (assign class): {upd.error}")
+        return {"ok": True, "class_id": str(row.get("id")), "assigned": True, "created": False}
+
+    ins_payload: Dict[str, Any] = {
+        "teacher_user_id": str(payload.new_teacher_user_id),
+        "batch_id": str(payload.batch_id),
+        "semester": int(payload.semester),
+        "subject": str(payload.subject).strip() or f"{cq.data[0].get('course_code')} — {cq.data[0].get('title')}",
+        "section": sec,
+        "degree_id": degree_id,
+        "department_id": dep_id,
+        "college_id": college_id,
+        "subject_id": str(payload.subject_id),
+    }
+    ins = supabase.table("teacher_classes").insert(ins_payload).execute()
+    if getattr(ins, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (create class): {ins.error}")
+    new_id = (ins.data or [{}])[0].get("id")
+    return {"ok": True, "class_id": str(new_id) if new_id else None, "assigned": True, "created": True}
+    return {"ok": True, "application_id": str(application_id), "saved": True}
+
+
+@teacher_router.post("/api/hod/ai/meeting-agenda", summary="HOD AI: generate meeting agenda for the department")
+def hod_ai_meeting_agenda(payload: HodAiAgendaIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    college_id, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    # Gather lightweight stats
+    classes = supabase.table("teacher_classes").select("id,teacher_user_id,semester,subject,department_id", count="estimated").in_("department_id", dept_ids).execute()
+    classes_count = getattr(classes, "count", None) or (len(classes.data or []) if getattr(classes, "data", None) else 0)
+    apps = supabase.table("teacher_applications").select("id,status", count="estimated").in_("department_id", dept_ids).execute()
+    pending_apps = 0
+    if getattr(apps, "data", None):
+        pending_apps = len([a for a in (apps.data or []) if a.get("status") == "pending"])
+    staff = supabase.table("teacher_profiles").select("auth_user_id", count="estimated").in_("department_id", dept_ids).execute()
+    staff_count = getattr(staff, "count", None) or (len(staff.data or []) if getattr(staff, "data", None) else 0)
+
+    dept_rows = _enrich_departments(supabase, dept_ids)
+    dept_names = [d.get("name") for d in dept_rows if d.get("name")]
+
+    prompt = "\n".join([
+        "Generate a staff meeting agenda for the HOD.",
+        "", 
+        f"Department(s): {', '.join(dept_names) if dept_names else '(unknown)'}",
+        f"College ID: {college_id or '(unknown)'}",
+        f"Window (days): {payload.days}",
+        f"Classes count: {classes_count}",
+        f"Staff count: {staff_count}",
+        f"Pending teacher applications: {pending_apps}",
+        "", 
+        "Constraints:",
+        "- Keep it to 30–40 minutes total",
+        "- Include: quick metrics, curriculum/syllabus, student performance signals, blockers, action items",
+        f"Extra focus from HOD: {payload.focus or '(none)'}",
+    ])
+    md = _hod_ai_generate_markdown(prompt)
+    return {"ok": True, "markdown": md}
+
+
+@teacher_router.post("/api/hod/ai/risk-flags", summary="HOD AI: generate risk flags and recommendations")
+def hod_ai_risk_flags(payload: HodAiAgendaIn, authorization: Optional[str] = Header(default=None)):
+    hod_user_id = _require_hod(authorization)
+    supabase = get_service_client()
+    _, dept_ids = _hod_scope_departments(supabase, hod_user_id)
+    if not dept_ids:
+        raise HTTPException(status_code=404, detail="No departments configured for this HOD")
+
+    cls_res = supabase.table("teacher_classes").select("id,teacher_user_id,semester,subject,section,department_id").in_("department_id", dept_ids).limit(2000).execute()
+    if getattr(cls_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (classes): {cls_res.error}")
+    classes = cls_res.data or []
+    workload: Dict[str, int] = {}
+    for c in classes:
+        tid = str(c.get("teacher_user_id") or "")
+        if not tid:
+            continue
+        workload[tid] = workload.get(tid, 0) + 1
+    top_load = sorted(workload.items(), key=lambda kv: kv[1], reverse=True)[:10]
+
+    apps_res = supabase.table("teacher_applications").select("id,status").in_("department_id", dept_ids).limit(1000).execute()
+    pending_apps = len([a for a in (apps_res.data or []) if a.get("status") == "pending"]) if not getattr(apps_res, "error", None) else 0
+
+    dept_rows = _enrich_departments(supabase, dept_ids)
+    dept_names = [d.get("name") for d in dept_rows if d.get("name")]
+
+    prompt = "\n".join([
+        "Identify risks for the department(s) and propose mitigations.",
+        "", 
+        f"Departments: {', '.join(dept_names) if dept_names else '(unknown)'}",
+        f"Classes: {len(classes)}",
+        f"Pending teacher applications: {pending_apps}",
+        "", 
+        "Top teacher workloads (teacher_id -> classes_count):",
+        *(f"- {tid}: {cnt}" for tid, cnt in top_load),
+        "", 
+        "Output format:",
+        "- ## Risks (bullets)",
+        "- ## Recommendations (bullets)",
+        "- ## Quick Wins (next 7 days)",
+        f"Extra focus from HOD: {payload.focus or '(none)'}",
+    ])
+    md = _hod_ai_generate_markdown(prompt)
+    return {"ok": True, "markdown": md}
 # ================= Debug Helpers (can be removed in production) ==================
 @teacher_router.get("/api/debug/teacher-routes", summary="Debug: list registered teacher routes")
 def debug_list_teacher_routes():
@@ -9569,7 +10915,7 @@ def _check_department_delete_blockers(supabase: Client, department_id: str) -> L
     "/api/degrees/{degree_id}",
     summary="Delete a degree, its departments, batches, and related syllabus data",
 )
-def delete_degree(degree_id: uuid.UUID):
+def delete_degree(degree_id: uuid.UUID, force: bool = False):
     supabase = get_service_client()
 
     deg_res = (
@@ -9591,22 +10937,31 @@ def delete_degree(degree_id: uuid.UUID):
 
     # Block deletion if other products depend on the degree directly
     direct_blockers: List[str] = []
-    for table_name, label, column in (
-        ("teacher_classes", "teacher classes", "degree_id"),
-        ("user_education", "user education records", "degree_id"),
-    ):
-        check = supabase.table(table_name).select(column).eq(column, str(degree_id)).limit(1).execute()
-        if getattr(check, "error", None):
-            raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for degree): {check.error}")
-        if check.data:
-            direct_blockers.append(label)
+    
+    # If force is True, we will attempt to delete or unlink these records instead of blocking
+    if not force:
+        for table_name, label, column in (
+            ("teacher_classes", "teacher classes", "degree_id"),
+            ("user_education", "user education records", "degree_id"),
+        ):
+            check = supabase.table(table_name).select(column).eq(column, str(degree_id)).limit(1).execute()
+            if getattr(check, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for degree): {check.error}")
+            if check.data:
+                direct_blockers.append(label)
 
-    if direct_blockers:
-        formatted = ", ".join(direct_blockers)
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete degree because related data exists: {formatted}. Remove or reassign those records first.",
-        )
+        if direct_blockers:
+            formatted = ", ".join(direct_blockers)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete degree because related data exists: {formatted}. Remove or reassign those records first.",
+            )
+    else:
+        # Force delete: clean up direct dependencies
+        # 1. User Education - delete records linked to this degree
+        _ = supabase.table("user_education").delete().eq("degree_id", str(degree_id)).execute()
+        # 2. Teacher Classes - delete classes linked to this degree
+        _ = supabase.table("teacher_classes").delete().eq("degree_id", str(degree_id)).execute()
 
     dept_res = (
         supabase.table("departments")
@@ -9617,30 +10972,45 @@ def delete_degree(degree_id: uuid.UUID):
     if getattr(dept_res, "error", None):
         raise HTTPException(status_code=500, detail=f"Supabase error (list departments for degree): {dept_res.error}")
 
-    # Check blockers per department before any deletion
-    per_dept_blockers: Dict[str, List[str]] = {}
-    for dept_row in dept_res.data or []:
-        dept_id = dept_row.get("id")
-        if not dept_id:
-            continue
-        blockers = _check_department_delete_blockers(supabase, dept_id)
-        if blockers:
-            per_dept_blockers[dept_row.get("name") or dept_id] = blockers
+    # Check blockers per department before any deletion (unless forced)
+    if not force:
+        per_dept_blockers: Dict[str, List[str]] = {}
+        for dept_row in dept_res.data or []:
+            dept_id = dept_row.get("id")
+            if not dept_id:
+                continue
+            blockers = _check_department_delete_blockers(supabase, dept_id)
+            if blockers:
+                per_dept_blockers[dept_row.get("name") or dept_id] = blockers
 
-    if per_dept_blockers:
-        # Keep message short but actionable
-        names = ", ".join(list(per_dept_blockers.keys())[:5])
-        suffix = "" if len(per_dept_blockers) <= 5 else f" (+{len(per_dept_blockers) - 5} more)"
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete degree because related data exists under departments: {names}{suffix}. Remove or reassign those records first.",
-        )
+        if per_dept_blockers:
+            # Keep message short but actionable
+            names = ", ".join(list(per_dept_blockers.keys())[:5])
+            suffix = "" if len(per_dept_blockers) <= 5 else f" (+{len(per_dept_blockers) - 5} more)"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete degree because related data exists under departments: {names}{suffix}. Remove or reassign those records first.",
+            )
 
     stats = {"departments": 0, "batches": 0, "courses": 0}
     for dept_row in dept_res.data or []:
         dept_id_str = dept_row.get("id")
         if not dept_id_str:
             continue
+        
+        if force:
+            # Force cleanup for department dependencies
+            # 1. Marketplace Notes
+            _ = supabase.table("marketplace_notes").delete().eq("department_id", dept_id_str).execute()
+            # 2. Teacher Applications
+            _ = supabase.table("teacher_applications").delete().eq("department_id", dept_id_str).execute()
+            # 3. Teacher Classes (by department)
+            _ = supabase.table("teacher_classes").delete().eq("department_id", dept_id_str).execute()
+            # 4. User Education (by department)
+            _ = supabase.table("user_education").delete().eq("department_id", dept_id_str).execute()
+            # 5. Teacher Profiles - Update to NULL (don't delete user profile)
+            _ = supabase.table("teacher_profiles").update({"department_id": None}).eq("department_id", dept_id_str).execute()
+
         dept_uuid = uuid.UUID(dept_id_str)
         batch_stats = _cascade_delete_department_batches(supabase, dept_uuid)
         stats["batches"] += int(batch_stats.get("batches", 0))
@@ -9940,7 +11310,7 @@ def rename_college(college_id: uuid.UUID, payload: CollegeNameOnlyIn):
     "/api/colleges/{college_id}",
     summary="Delete a college, its degrees/departments/batches, and related syllabus data",
 )
-def delete_college(college_id: uuid.UUID):
+def delete_college(college_id: uuid.UUID, force: bool = Query(default=False)):
     supabase = get_service_client()
 
     col_res = (
@@ -9955,26 +11325,65 @@ def delete_college(college_id: uuid.UUID):
     if not col_res.data:
         raise HTTPException(status_code=404, detail="College not found")
 
-    # Block deletion if other products depend on the college directly
-    direct_blockers: List[str] = []
-    for table_name, label, column in (
-        ("teacher_applications", "teacher applications", "college_id"),
-        ("teacher_profiles", "teacher profiles", "college_id"),
-        ("teacher_classes", "teacher classes", "college_id"),
-        ("user_education", "user education records", "college_id"),
-    ):
-        check = supabase.table(table_name).select(column).eq(column, str(college_id)).limit(1).execute()
-        if getattr(check, "error", None):
-            raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for college): {check.error}")
-        if check.data:
-            direct_blockers.append(label)
+    def _chunked(values: List[str], size: int = 150) -> List[List[str]]:
+        return [values[i : i + size] for i in range(0, len(values), size)]
 
-    if direct_blockers:
-        formatted = ", ".join(direct_blockers)
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete college because related data exists: {formatted}. Remove or reassign those records first.",
-        )
+    def _as_id_list(values) -> List[str]:
+        out_ids: List[str] = []
+        for v in (values or []):
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                out_ids.append(s)
+        return list(dict.fromkeys(out_ids))
+
+    def _try_delete_in(table: str, key: str, ids_list: List[str]) -> int:
+        if not ids_list:
+            return 0
+        deleted = 0
+        for chunk in _chunked(_as_id_list(ids_list)):
+            res = supabase.table(table).delete().in_(key, chunk).execute()
+            if getattr(res, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (delete {table}): {res.error}")
+            deleted += len(getattr(res, "data", None) or [])
+        return deleted
+
+    def _try_update_in(table: str, key: str, ids_list: List[str], updates: Dict[str, Any]) -> int:
+        if not ids_list:
+            return 0
+        updated = 0
+        for chunk in _chunked(_as_id_list(ids_list)):
+            res = supabase.table(table).update(updates).in_(key, chunk).execute()
+            if getattr(res, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (update {table}): {res.error}")
+            updated += len(getattr(res, "data", None) or [])
+        return updated
+
+    if not force:
+        # Block deletion if other products depend on the college directly
+        direct_blockers: List[str] = []
+        for table_name, label, column in (
+            ("teacher_applications", "teacher applications", "college_id"),
+            ("teacher_profiles", "teacher profiles", "college_id"),
+            ("teacher_classes", "teacher classes", "college_id"),
+            ("user_education", "user education records", "college_id"),
+            ("user_profiles", "user profiles", "college_id"),
+            ("marketplace_notes", "marketplace notes", "college_id"),
+            ("hod_role_applications", "hod role applications", "college_id"),
+        ):
+            check = supabase.table(table_name).select(column).eq(column, str(college_id)).limit(1).execute()
+            if getattr(check, "error", None):
+                raise HTTPException(status_code=500, detail=f"Supabase error (check {label} for college): {check.error}")
+            if check.data:
+                direct_blockers.append(label)
+
+        if direct_blockers:
+            formatted = ", ".join(direct_blockers)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete college because related data exists: {formatted}. Remove or reassign those records first.",
+            )
 
     deg_res = (
         supabase.table("degrees")
@@ -9984,6 +11393,91 @@ def delete_college(college_id: uuid.UUID):
     )
     if getattr(deg_res, "error", None):
         raise HTTPException(status_code=500, detail=f"Supabase error (list degrees for college): {deg_res.error}")
+
+    # When force=true, proactively detach/delete dependent rows that would block FK constraints.
+    force_stats: Dict[str, int] = {}
+    if force:
+        # Identify hierarchy ids first.
+        deg_ids = [r.get("id") for r in (deg_res.data or []) if isinstance(r, dict) and r.get("id")]
+        dept_q = supabase.table("departments").select("id").eq("college_id", str(college_id)).execute()
+        if getattr(dept_q, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (list departments for college): {dept_q.error}")
+        dept_ids = [r.get("id") for r in (dept_q.data or []) if isinstance(r, dict) and r.get("id")]
+
+        batch_q = supabase.table("batches").select("id").eq("college_id", str(college_id)).execute()
+        if getattr(batch_q, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (list batches for college): {batch_q.error}")
+        batch_ids = [r.get("id") for r in (batch_q.data or []) if isinstance(r, dict) and r.get("id")]
+
+        # Marketplace notes (delete reviews/purchases first to satisfy FKs)
+        note_q = supabase.table("marketplace_notes").select("id").eq("college_id", str(college_id)).execute()
+        if getattr(note_q, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (list marketplace notes for college): {note_q.error}")
+        note_ids = [r.get("id") for r in (note_q.data or []) if isinstance(r, dict) and r.get("id")]
+        if note_ids:
+            force_stats["marketplace_reviews_deleted"] = _try_delete_in("marketplace_reviews", "note_id", note_ids)
+            force_stats["marketplace_purchases_deleted"] = _try_delete_in("marketplace_purchases", "note_id", note_ids)
+            force_stats["marketplace_notes_deleted"] = _try_delete_in("marketplace_notes", "id", note_ids)
+
+        # Teacher applications and related HOD role applications (safe to delete)
+        del_apps = supabase.table("teacher_applications").delete().eq("college_id", str(college_id)).execute()
+        if getattr(del_apps, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete teacher applications for college): {del_apps.error}")
+        force_stats["teacher_applications_deleted"] = len(getattr(del_apps, "data", None) or [])
+        if dept_ids:
+            force_stats["teacher_applications_deleted"] += _try_delete_in("teacher_applications", "department_id", dept_ids)
+
+        hod_role_del = supabase.table("hod_role_applications").delete().eq("college_id", str(college_id)).execute()
+        if getattr(hod_role_del, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete hod role applications for college): {hod_role_del.error}")
+        force_stats["hod_role_applications_deleted"] = len(getattr(hod_role_del, "data", None) or [])
+        if dept_ids:
+            force_stats["hod_role_applications_deleted"] += _try_delete_in("hod_role_applications", "department_id", dept_ids)
+
+        # Teacher classes: delete (these are college-scoped operational rows)
+        del_cls = supabase.table("teacher_classes").delete().eq("college_id", str(college_id)).execute()
+        if getattr(del_cls, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete teacher classes for college): {del_cls.error}")
+        force_stats["teacher_classes_deleted"] = len(getattr(del_cls, "data", None) or [])
+        force_stats["teacher_classes_deleted"] += _try_delete_in("teacher_classes", "degree_id", deg_ids)
+        force_stats["teacher_classes_deleted"] += _try_delete_in("teacher_classes", "department_id", dept_ids)
+        force_stats["teacher_classes_deleted"] += _try_delete_in("teacher_classes", "batch_id", batch_ids)
+
+        # Teacher profiles: detach (avoid deleting user identity)
+        upd_tp = supabase.table("teacher_profiles").update({"college_id": None, "department_id": None}).eq("college_id", str(college_id)).execute()
+        if getattr(upd_tp, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (detach teacher profiles): {upd_tp.error}")
+        force_stats["teacher_profiles_detached"] = len(getattr(upd_tp, "data", None) or [])
+        if dept_ids:
+            force_stats["teacher_profiles_detached"] += _try_update_in("teacher_profiles", "department_id", dept_ids, {"department_id": None, "college_id": None})
+
+        # User education: delete records (aligns with delete_degree behavior)
+        del_ue = supabase.table("user_education").delete().eq("college_id", str(college_id)).execute()
+        if getattr(del_ue, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (delete user education): {del_ue.error}")
+        force_stats["user_education_deleted"] = len(getattr(del_ue, "data", None) or [])
+
+        upd_up = supabase.table("user_profiles").update({"college_id": None}).eq("college_id", str(college_id)).execute()
+        if getattr(upd_up, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (detach user profiles college): {upd_up.error}")
+        force_stats["user_profiles_detached"] = len(getattr(upd_up, "data", None) or [])
+        force_stats["user_profiles_detached"] += _try_update_in("user_profiles", "department_id", dept_ids, {"department_id": None})
+        force_stats["user_profiles_detached"] += _try_update_in("user_profiles", "batch_id", batch_ids, {"batch_id": None})
+
+        upd_ux = supabase.table("user_experiences").update({"batch_id": None}).in_("batch_id", _as_id_list(batch_ids) or ["00000000-0000-0000-0000-000000000000"]).execute()
+        if getattr(upd_ux, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (detach user experiences batch): {upd_ux.error}")
+        force_stats["user_experiences_detached"] = len(getattr(upd_ux, "data", None) or [])
+
+        # HOD batch management references batches without ON DELETE SET NULL -> detach.
+        if dept_ids:
+            hb_updates = {
+                "first_year_batch_id": None,
+                "second_year_batch_id": None,
+                "third_year_batch_id": None,
+                "final_year_batch_id": None,
+            }
+            force_stats["hod_batch_management_detached"] = _try_update_in("hod_batch_management", "department_id", dept_ids, hb_updates)
 
     stats = {"degrees": 0, "departments": 0, "batches": 0, "courses": 0}
     for deg_row in deg_res.data or []:
@@ -10000,18 +11494,19 @@ def delete_college(college_id: uuid.UUID):
         if getattr(dept_res, "error", None):
             raise HTTPException(status_code=500, detail=f"Supabase error (list departments for degree): {dept_res.error}")
 
-        # Ensure no department blockers exist (defensive; should already be implied by direct blockers)
-        for drow in dept_res.data or []:
-            did = drow.get("id")
-            if not did:
-                continue
-            blockers = _check_department_delete_blockers(supabase, did)
-            if blockers:
-                formatted = ", ".join(blockers)
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot delete college because related data exists under a department: {formatted}. Remove or reassign those records first.",
-                )
+        if not force:
+            # Ensure no department blockers exist (defensive; should already be implied by direct blockers)
+            for drow in dept_res.data or []:
+                did = drow.get("id")
+                if not did:
+                    continue
+                blockers = _check_department_delete_blockers(supabase, did)
+                if blockers:
+                    formatted = ", ".join(blockers)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Cannot delete college because related data exists under a department: {formatted}. Remove or reassign those records first.",
+                    )
 
         for drow in dept_res.data or []:
             did = drow.get("id")
@@ -10037,6 +11532,8 @@ def delete_college(college_id: uuid.UUID):
 
     return {
         "ok": True,
+        "forced": bool(force),
+        "force_cleanup": force_stats,
         "deleted_college_id": str(college_id),
         "deleted_degrees": stats["degrees"],
         "deleted_departments": stats["departments"],
@@ -13432,6 +14929,156 @@ def mp_list_notes(
     total = len(filtered)
     paged = filtered[offset: offset + limit]
     return {"items": paged, "total": total, "limit": limit, "offset": offset}
+
+
+class TeacherNotesBatchIn(BaseModel):
+    subject_ids: List[str] = Field(..., min_items=1, max_items=200)
+    limit: int = Field(default=6, ge=1, le=50)
+
+
+@marketplace_router.post("/api/marketplace/subjects/teacher-notes/batch", summary="Batch list teacher marketplace notes for subjects")
+def mp_teacher_notes_by_subject_batch(payload: TeacherNotesBatchIn):
+    raw_ids = [str(s).strip() for s in (payload.subject_ids or []) if s]
+    cleaned = []
+    seen = set()
+    for sid in raw_ids:
+        if not sid or sid.lower() in {"null", "undefined"}:
+            continue
+        if sid in seen:
+            continue
+        seen.add(sid)
+        cleaned.append(sid)
+    if not cleaned:
+        return {"notes": {}, "count": 0, "limit": payload.limit}
+
+    supabase = get_service_client()
+    # Fetch a bounded window; we'll group and cap per-subject in app code
+    max_total = min(500, max(1, payload.limit) * len(cleaned) * 2)
+    notes_res = (
+        supabase.table("marketplace_notes")
+        .select("id,title,subject,subject_id,price_cents,owner_user_id,updated_at,created_at,semester,unit,exam_type")
+        .in_("subject_id", cleaned)
+        .order("updated_at", desc=True)
+        .limit(max_total)
+        .execute()
+    )
+    if getattr(notes_res, "error", None):
+        raise HTTPException(status_code=500, detail=f"Supabase error (notes by subject batch): {notes_res.error}")
+
+    notes: List[Dict[str, Any]] = notes_res.data or []
+    if not notes:
+        return {"notes": {}, "count": 0, "limit": payload.limit}
+
+    owner_ids = {n.get("owner_user_id") for n in notes if n.get("owner_user_id")}
+    if not owner_ids:
+        return {"notes": {}, "count": 0, "limit": payload.limit}
+
+    teacher_ids: Set[str] = set()
+    try:
+        role_res = (
+            supabase.table("admin_roles")
+            .select("auth_user_id,role")
+            .in_("auth_user_id", list(owner_ids))
+            .eq("role", "teacher")
+            .execute()
+        )
+        if getattr(role_res, "error", None):
+            teacher_ids = set(owner_ids)
+        else:
+            teacher_ids = {row.get("auth_user_id") for row in (role_res.data or []) if row.get("auth_user_id")}
+    except Exception:
+        teacher_ids = set(owner_ids)
+
+    filtered_notes = [row for row in notes if row.get("owner_user_id") in teacher_ids]
+    if not filtered_notes:
+        return {"notes": {}, "count": 0, "limit": payload.limit}
+
+    seller_ids = {row.get("owner_user_id") for row in filtered_notes if row.get("owner_user_id")}
+    user_profiles_map: Dict[str, Dict[str, Any]] = {}
+    teacher_profiles_map: Dict[str, Dict[str, Any]] = {}
+
+    if seller_ids:
+        try:
+            prof_res = (
+                supabase.table("user_profiles")
+                .select("auth_user_id,name,profile_image_url")
+                .in_("auth_user_id", list(seller_ids))
+                .execute()
+            )
+            if not getattr(prof_res, "error", None):
+                for row in prof_res.data or []:
+                    uid = row.get("auth_user_id")
+                    if uid:
+                        user_profiles_map[uid] = row
+        except Exception:
+            pass
+        try:
+            tprof_res = (
+                supabase.table("teacher_profiles")
+                .select("auth_user_id,name,profile_image_url")
+                .in_("auth_user_id", list(seller_ids))
+                .execute()
+            )
+            if not getattr(tprof_res, "error", None):
+                for row in tprof_res.data or []:
+                    uid = row.get("auth_user_id")
+                    if uid:
+                        teacher_profiles_map[uid] = row
+        except Exception:
+            pass
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in filtered_notes:
+        sid = row.get("subject_id")
+        if not sid:
+            continue
+        key = str(sid)
+        bucket = grouped.setdefault(key, [])
+        if len(bucket) >= payload.limit:
+            continue
+        owner_id = row.get("owner_user_id")
+        teacher_profile = teacher_profiles_map.get(owner_id)
+        user_profile = user_profiles_map.get(owner_id)
+        seller_name = None
+        seller_avatar = None
+        if teacher_profile and teacher_profile.get("name"):
+            seller_name = teacher_profile.get("name")
+        elif user_profile and user_profile.get("name"):
+            seller_name = user_profile.get("name")
+        elif owner_id:
+            seller_name = owner_id[:6] + "..."
+        if teacher_profile and teacher_profile.get("profile_image_url"):
+            seller_avatar = teacher_profile.get("profile_image_url")
+        elif user_profile and user_profile.get("profile_image_url"):
+            seller_avatar = user_profile.get("profile_image_url")
+
+        seller = {"id": owner_id, "is_teacher": True, "verified": True}
+        if seller_name:
+            seller["name"] = seller_name
+        if seller_avatar:
+            seller["avatar_url"] = seller_avatar
+        if owner_id:
+            seller["profile_href"] = f"/ui/teacher_profile.html?user={owner_id}"
+
+        bucket.append(
+            {
+                "id": row.get("id"),
+                "title": row.get("title"),
+                "subject": row.get("subject"),
+                "subject_id": row.get("subject_id"),
+                "price_cents": int(row.get("price_cents") or 0),
+                "owner_user_id": owner_id,
+                "updated_at": row.get("updated_at") or row.get("created_at"),
+                "created_at": row.get("created_at"),
+                "semester": row.get("semester"),
+                "unit": row.get("unit"),
+                "exam_type": row.get("exam_type"),
+                "seller": seller,
+            }
+        )
+
+    total = sum(len(v) for v in grouped.values())
+    return {"notes": grouped, "count": total, "limit": payload.limit}
 
 
 @marketplace_router.get("/api/marketplace/subjects/{subject_id}/teacher-notes", summary="List teacher marketplace notes for a subject")
@@ -16893,6 +18540,317 @@ def _fetch_test_questions(supabase, test_id: str) -> List[Dict[str, Any]]:
     return getattr(res, "data", None) or []
 
 
+def _ensure_user_allowed_for_test(supabase, test_row: Dict[str, Any], user_id: str):
+    """Gate test access based on class membership.
+
+    - If test has class_id: only enrolled students of that class can access.
+    - Owning teacher always has access.
+    - If class_id is null: open to all signed-in users.
+    """
+    try:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    if (test_row.get("teacher_user_id") or "") == user_id:
+        return
+
+    class_id = test_row.get("class_id")
+    if not class_id:
+        return
+
+    try:
+        # First fetch the class row to get matching criteria
+        class_res = _supabase_retry(lambda: supabase.table("teacher_classes").select("*").eq("id", str(class_id)).limit(1).execute())
+        if getattr(class_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (get class): {class_res.error}")
+        if not class_res.data:
+            # Class not found - deny access
+            raise HTTPException(status_code=403, detail="This test is restricted to students of the selected class")
+        class_row = class_res.data[0]
+
+        # Get user's profile ID from auth_user_id
+        prof_res = _supabase_retry(lambda: supabase.table("user_profiles").select("id").eq("auth_user_id", user_id).limit(1).execute())
+        if getattr(prof_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (get profile): {prof_res.error}")
+        if not prof_res.data:
+            raise HTTPException(status_code=403, detail="This test is restricted to students of the selected class")
+        profile_id = prof_res.data[0].get("id")
+
+        # Build query to check if user's education record matches class criteria
+        edu_query = supabase.table("user_education").select("id").eq("user_profile_id", profile_id)
+
+        filter_count = 0
+        for column, value in (
+            ("batch_id", class_row.get("batch_id")),
+            ("section", class_row.get("section")),
+            ("current_semester", class_row.get("semester")),
+            ("degree_id", class_row.get("degree_id")),
+            ("department_id", class_row.get("department_id")),
+            ("college_id", class_row.get("college_id")),
+        ):
+            if value not in {None, ""}:
+                eq_value = str(value) if column.endswith("_id") or column == "batch_id" else value
+                edu_query = edu_query.eq(column, eq_value)
+                filter_count += 1
+
+        if filter_count == 0:
+            # No filters means class has no criteria - allow access
+            return
+
+        edu_res = _supabase_retry(lambda: edu_query.limit(1).execute())
+
+        if getattr(edu_res, "error", None):
+            raise HTTPException(status_code=500, detail=f"Supabase error (class access): {edu_res.error}")
+        rows = getattr(edu_res, "data", None) or []
+        if not rows:
+            raise HTTPException(status_code=403, detail="This test is restricted to students of the selected class")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to validate class access: {exc}") from exc
+
+
+class TeacherAIGenerateTestIn(BaseModel):
+    # Academic test mode can build a multi-line prompt from many unit/topics.
+    # Keep an upper bound to avoid accidental huge payloads.
+    topic: str = Field(..., min_length=3, max_length=5000)
+    count: int = Field(10, ge=1, le=30)
+
+
+def _generate_topic_mcq_for_teacher(topic: str, count: int) -> Tuple[str, List[Dict[str, Any]], str]:
+    """Generate MCQ questions from a topic for the teacher test builder.
+
+    IMPORTANT: Per product requirement, this uses gemini-2.5-flash only.
+
+    Returns (title, questions, model_name).
+    """
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=501, detail="Gemini API key not configured for AI test generation.")
+    try:
+        import google.generativeai as genai  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Gemini client library missing: {exc}") from exc
+
+    model_name = "gemini-2.5-flash"
+    safe_count = int(max(1, min(int(count or 10), 30)))
+    cleaned_topic = (topic or "").strip()
+    if not cleaned_topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+
+    # Keep the schema example short even if the actual topic prompt is long.
+    cleaned_topic_one_line = re.sub(r"\s+", " ", cleaned_topic).strip()
+    schema_title = (cleaned_topic_one_line[:80] + "…") if len(cleaned_topic_one_line) > 80 else cleaned_topic_one_line
+
+    prompt = textwrap.dedent(
+        f"""
+        You are PaperX's quiz compiler.
+
+        Create EXACTLY {safe_count} multiple-choice questions (MCQ) for the topic: "{cleaned_topic}".
+
+        Constraints:
+        - Each question MUST have 4 options.
+        - Options must be plausible and unambiguous.
+        - Provide: prompt, options (length 4), correct_index (0..3), explanation (<= 18 words).
+        - Difficulty: mixed (basic to moderate), suitable for classroom assessment.
+        - Return ONLY strict JSON (no markdown fences, no commentary).
+
+        Schema (exact keys):
+        {{"title":"...","description":"...","questions":[{{"prompt":"...","options":["...","...","...","..."],"correct_index":0,"explanation":"..."}}]}}
+        """
+    ).strip()
+
+    compact_prompt = textwrap.dedent(
+        f"""
+        Return STRICT JSON ONLY.
+        Make it small to avoid truncation.
+
+        Topic: "{cleaned_topic}"
+
+        Output EXACTLY {safe_count} questions.
+
+        Hard limits:
+        - prompt <= 120 chars
+        - each option <= 70 chars
+                - explanation <= 12 words
+
+                Schema:
+                {{"title":"{schema_title} MCQ","questions":[{{"prompt":"...","options":["...","...","...","..."],"correct_index":0,"explanation":"..."}}]}}
+                """
+        ).strip()
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(model_name)
+    generation_config = genai.GenerationConfig(
+        response_mime_type="application/json",
+        temperature=0.25,
+        top_p=0.9,
+        max_output_tokens=int(os.getenv("GEMINI_TEACHER_TEST_MAX_TOKENS", "3600") or "3600"),
+        candidate_count=1,
+    )
+
+    request_timeout = float(os.getenv("GEMINI_TEACHER_TEST_TIMEOUT", "35"))
+    def _extract_text(resp_obj: Any) -> Optional[str]:
+        try:
+            t = resp_obj.text  # type: ignore[attr-defined]
+            if t and str(t).strip():
+                return str(t)
+        except Exception:
+            pass
+        try:
+            if getattr(resp_obj, "candidates", None):
+                for cand in resp_obj.candidates:
+                    content = getattr(cand, "content", None)
+                    parts = getattr(content, "parts", None) if content is not None else None
+                    if parts:
+                        s = "".join(getattr(p, "text", "") for p in parts if hasattr(p, "text"))
+                        if s and s.strip():
+                            return s
+        except Exception:
+            pass
+        return None
+
+    def _call(prompt_text: str) -> str:
+        try:
+            r = model.generate_content(
+                [{"text": prompt_text}],
+                generation_config=generation_config,
+                request_options={"timeout": request_timeout},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Gemini request failed: {exc}") from exc
+        txt = _extract_text(r)
+        if not txt:
+            raise HTTPException(status_code=502, detail="Gemini returned no content")
+        return txt
+
+    raw = _call(prompt)
+
+    def _strip_code_fences(txt: str) -> str:
+        s = txt.strip()
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", s)
+            s = re.sub(r"\s*```$", "", s)
+        return s.strip()
+
+    def _extract_first_json_object(txt: str) -> Optional[str]:
+        start = txt.find('{')
+        if start == -1:
+            return None
+        depth = 0
+        for i in range(start, len(txt)):
+            c = txt[i]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return txt[start:i+1]
+        return None
+
+    def _try_parse_payload(raw_text: str) -> Dict[str, Any]:
+        s = _strip_code_fences(raw_text)
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+        block = _extract_first_json_object(s)
+        if block:
+            try:
+                return json.loads(block)
+            except Exception:
+                pass
+        # literal eval fallback
+        t = s
+        try:
+            t = re.sub(r"\btrue\b", "True", t)
+            t = re.sub(r"\bfalse\b", "False", t)
+            t = re.sub(r"\bnull\b", "None", t)
+            val = ast.literal_eval(t)
+            if isinstance(val, dict):
+                return val
+        except Exception:
+            pass
+        raise ValueError("Unable to parse JSON")
+
+    try:
+        data = _try_parse_payload(raw)
+    except Exception:
+        # Retry once with compact prompt to reduce truncation risk
+        raw2 = _call(compact_prompt)
+        try:
+            data = _try_parse_payload(raw2)
+        except Exception as exc:
+            preview1 = (raw or "")[:360].replace("\n", " ")
+            preview2 = (raw2 or "")[:360].replace("\n", " ")
+            raise HTTPException(status_code=500, detail=f"Failed to parse AI JSON after retry: {exc}; preview1={preview1}; preview2={preview2}") from exc
+
+    title = str(data.get("title") or f"{cleaned_topic} MCQ").strip()[:200]
+    qlist = data.get("questions")
+    if not isinstance(qlist, list) or not qlist:
+        raise HTTPException(status_code=500, detail="AI response missing 'questions' list")
+
+    out_questions: List[Dict[str, Any]] = []
+    for idx, item in enumerate(qlist[:safe_count]):
+        if not isinstance(item, dict):
+            continue
+        prompt_text = str(item.get("prompt") or "").strip()
+        options = item.get("options")
+        correct_index = item.get("correct_index")
+        if not isinstance(options, list):
+            options = []
+        norm_options = [str(o or "").strip()[:500] for o in options if str(o or "").strip()]
+        norm_options = norm_options[:4]
+        while len(norm_options) < 4:
+            norm_options.append(norm_options[-1] if norm_options else "")
+        try:
+            ci = int(correct_index)
+        except Exception:
+            ci = 0
+        ci = max(0, min(ci, 3))
+
+        # Validate through existing schema
+        try:
+            q_in = TestQuestionIn(
+                prompt=prompt_text,
+                options=norm_options,
+                correct_index=ci,
+                points=1,
+                order=idx,
+            )
+        except Exception:
+            continue
+
+        out_questions.append({
+            "prompt": q_in.prompt,
+            "options": q_in.options,
+            "correct_index": q_in.correct_index,
+            "points": q_in.points,
+            "order": idx,
+        })
+
+    if len(out_questions) < max(1, min(3, safe_count)):
+        raise HTTPException(status_code=500, detail="AI returned too few valid questions")
+
+    return title, out_questions, model_name
+
+
+@teacher_router.post("/api/teacher/tests/ai", summary="Teacher: generate MCQ questions with AI")
+def api_teacher_generate_test_ai(payload: TeacherAIGenerateTestIn, authorization: Optional[str] = Header(default=None)):
+    _ = _require_teacher(authorization)
+    title, out_questions, model = _generate_topic_mcq_for_teacher(payload.topic, payload.count)
+    return {
+        "topic": payload.topic,
+        "title": title,
+        "description": f"AI generated MCQ test on {payload.topic}.",
+        "questions": out_questions,
+        "model": model,
+        "count": len(out_questions),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 @teacher_router.post("/api/teacher/tests", summary="Create a test (MCQ)")
 def api_create_test(payload: CreateTestIn, authorization: Optional[str] = Header(default=None)):
     teacher_id = _require_teacher(authorization)
@@ -17173,9 +19131,10 @@ def api_get_test(test_id: str, authorization: Optional[str] = Header(default=Non
     user_id, _ = _get_auth_user(authorization)
     supabase = get_service_client()
     test_row = _fetch_test_row(supabase, test_id)
+    _ensure_user_allowed_for_test(supabase, test_row, user_id)
     questions = _fetch_test_questions(supabase, test_id)
 
-    attempt_res = (
+    attempt_res = _supabase_retry(lambda: (
         supabase
         .table("test_attempts")
         .select("id,submitted_at,score")
@@ -17183,7 +19142,7 @@ def api_get_test(test_id: str, authorization: Optional[str] = Header(default=Non
         .eq("student_user_id", user_id)
         .limit(1)
         .execute()
-    )
+    ))
     if getattr(attempt_res, "error", None):
         raise HTTPException(status_code=500, detail=f"Supabase error (attempt check): {attempt_res.error}")
     attempt = (getattr(attempt_res, "data", None) or [None])[0]
@@ -17218,8 +19177,8 @@ def api_get_test(test_id: str, authorization: Optional[str] = Header(default=Non
 def api_start_attempt(test_id: str, authorization: Optional[str] = Header(default=None)):
     user_id, _ = _get_auth_user(authorization)
     supabase = get_service_client()
-    _ = _fetch_test_row(supabase, test_id)  # ensure exists
     test_row = _fetch_test_row(supabase, test_id)
+    _ensure_user_allowed_for_test(supabase, test_row, user_id)
     if not test_row.get("accepting_submissions", True):
         raise HTTPException(status_code=410, detail="Test submissions are closed")
 
@@ -17275,6 +19234,7 @@ def api_submit_attempt(test_id: str, payload: SubmitAttemptIn, authorization: Op
     user_id, _ = _get_auth_user(authorization)
     supabase = get_service_client()
     test_row = _fetch_test_row(supabase, test_id)
+    _ensure_user_allowed_for_test(supabase, test_row, user_id)
     if not test_row.get("accepting_submissions", True):
         raise HTTPException(status_code=410, detail="Test submissions are closed")
     questions = _fetch_test_questions(supabase, test_id)
@@ -17588,11 +19548,41 @@ def create_app() -> FastAPI:
             "https://www.paperx.tech",
             "https://squid-app-6jvdq.ondigitalocean.app",
             "https://uppzpkmpxgyipjzcskva.supabase.co",
+            "http://127.0.0.1:5500",
+            "http://127.0.0.1:8000",
+            "http://localhost:5500",
+            "http://localhost:8000",
+            "http://localhost",
         ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Compress large HTML/CSS/JS/JSON responses to reduce bandwidth
+    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+
+    # Cache static assets to reduce repeated downloads
+    STATIC_CACHE_EXTENSIONS = {
+        ".css", ".js", ".mjs", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+        ".ico", ".woff2", ".woff", ".ttf", ".mp4", ".webm"
+    }
+    HTML_EXTENSIONS = {".html", ".htm"}
+
+    @app.middleware("http")
+    async def add_static_cache_headers(request: Request, call_next):  # type: ignore[override]
+        response = await call_next(request)
+        if request.method in ("GET", "HEAD"):
+            path = request.url.path or ""
+            if path.startswith("/ui/") or path.startswith("/assets/"):
+                ext = Path(path).suffix.lower()
+                if ext in HTML_EXTENSIONS:
+                    response.headers.setdefault("Cache-Control", "public, max-age=120")
+                elif ext in STATIC_CACHE_EXTENSIONS:
+                    response.headers.setdefault("Cache-Control", "public, max-age=604800, immutable")
+                else:
+                    response.headers.setdefault("Cache-Control", "public, max-age=3600")
+        return response
 
     app.include_router(projects_router)
     app.include_router(notes_router)
@@ -19951,3 +21941,1591 @@ async def group_chat_websocket(websocket: WebSocket, room_id: str):
                             print(f"[GroupChat] Cleaned up empty room {room_id}")
                     asyncio.create_task(cleanup_room())
 
+
+# ============================================
+# ASSIGNMENTS PORTAL
+# ============================================
+
+
+import hashlib
+
+def get_supabase() -> Client:
+    """Get or create Supabase client"""
+    # Try to find global client first
+    if 'supabase' in globals():
+        return globals()['supabase']
+    
+    # Fallback: create new client (should ideally reuse global)
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise ValueError("Supabase credentials not found")
+    return create_client(url, key)
+
+def get_user_id_from_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract user ID from Authorization header"""
+    if not authorization:
+        return None
+        
+    try:
+        token = authorization.replace("Bearer ", "").strip()
+        if not token:
+            return None
+            
+        supabase = get_supabase()
+        user = supabase.auth.get_user(token)
+        return user.user.id if user and user.user else None
+    except Exception as e:
+        print(f"[Auth] Error validating token: {e}")
+        return None
+
+
+# Pydantic models for assignments
+class AssignmentCreate(BaseModel):
+    class_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    instructions_md: Optional[str] = None
+    resource_links: Optional[List[str]] = []
+    assignment_type: Optional[str] = "individual"
+    max_team_size: Optional[int] = 1
+    max_marks: Optional[int] = 100
+    allowed_file_types: Optional[List[str]] = ["pdf", "jpg", "jpeg", "png", "doc", "docx", "ppt", "pptx"]
+    max_files: Optional[int] = 5
+    max_file_size_mb: Optional[int] = 10
+    due_date: str
+    allow_late_submission: Optional[bool] = False
+    late_penalty_percent: Optional[int] = 0
+    grace_period_hours: Optional[int] = 0
+    status: Optional[str] = "draft"
+    rubrics: Optional[List[Dict[str, Any]]] = []
+
+class AssignmentUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    instructions_md: Optional[str] = None
+    resource_links: Optional[List[str]] = None
+    assignment_type: Optional[str] = None
+    max_team_size: Optional[int] = None
+    max_marks: Optional[int] = None
+    allowed_file_types: Optional[List[str]] = None
+    max_files: Optional[int] = None
+    max_file_size_mb: Optional[int] = None
+    due_date: Optional[str] = None
+    allow_late_submission: Optional[bool] = None
+    late_penalty_percent: Optional[int] = None
+    grace_period_hours: Optional[int] = None
+    status: Optional[str] = None
+
+class SubmissionCreate(BaseModel):
+    file_urls: Optional[List[Dict[str, Any]]] = []
+    text_content: Optional[str] = None
+    is_draft: Optional[bool] = False
+
+class GradeSubmission(BaseModel):
+    total_marks: Optional[int] = None
+    rubric_scores: Optional[Dict[str, int]] = {}
+    feedback: Optional[str] = None
+
+class ExtensionRequest(BaseModel):
+    requested_date: str
+    reason: str
+
+class ExtensionResponse(BaseModel):
+    status: str  # approved, denied
+    new_due_date: Optional[str] = None
+
+
+# --- Staff Assignment Management ---
+
+@app.post("/api/assignments")
+def create_assignment(payload: AssignmentCreate, authorization: Optional[str] = Header(default=None)):
+    """Create a new assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Build assignment row
+    assignment_data = {
+        "teacher_user_id": user_id,
+        "class_id": payload.class_id,
+        "title": payload.title,
+        "description": payload.description,
+        "instructions_md": payload.instructions_md,
+        "resource_links": payload.resource_links or [],
+        "assignment_type": payload.assignment_type or "individual",
+        "max_team_size": payload.max_team_size or 1,
+        "max_marks": payload.max_marks or 100,
+        "allowed_file_types": payload.allowed_file_types or ["pdf", "jpg", "jpeg", "png", "doc", "docx"],
+        "max_files": payload.max_files or 5,
+        "max_file_size_mb": payload.max_file_size_mb or 10,
+        "due_date": payload.due_date,
+        "allow_late_submission": payload.allow_late_submission or False,
+        "late_penalty_percent": payload.late_penalty_percent or 0,
+        "grace_period_hours": payload.grace_period_hours or 0,
+        "status": payload.status or "draft",
+    }
+    
+    if payload.status == "published":
+        assignment_data["published_at"] = datetime.now(timezone.utc).isoformat()
+    
+    result = supabase.table("assignments").insert(assignment_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create assignment")
+    
+    assignment = result.data[0]
+    
+    # Insert rubrics if provided
+    if payload.rubrics:
+        for idx, rubric in enumerate(payload.rubrics):
+            supabase.table("assignment_rubrics").insert({
+                "assignment_id": assignment["id"],
+                "criterion": rubric.get("criterion", ""),
+                "max_points": rubric.get("max_points", 0),
+                "description": rubric.get("description", ""),
+                "order_index": idx
+            }).execute()
+    
+    return {"success": True, "assignment": assignment}
+
+
+@app.get("/api/assignments")
+def list_assignments(
+    class_id: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None)
+):
+    """List assignments created by the teacher"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    query = supabase.table("assignments").select("*").eq("teacher_user_id", user_id)
+    
+    if class_id:
+        query = query.eq("class_id", class_id)
+    if status:
+        query = query.eq("status", status)
+    
+    query = query.order("created_at", desc=True)
+    result = query.execute()
+    
+    assignments = result.data or []
+    if not assignments:
+        return {"assignments": []}
+    
+    # Batch fetch submissions to avoid N+1
+    assign_ids = [a["id"] for a in assignments]
+    
+    # Fetch all submissions for these assignments (just status is enough)
+    sub_query = supabase.table("assignment_submissions").select("assignment_id,status").in_("assignment_id", assign_ids)
+    sub_res = sub_query.execute()
+    all_subs = sub_res.data or []
+    
+    # Group by assignment_id
+    stats_map = {}
+    for s in all_subs:
+        aid = s.get("assignment_id")
+        if aid not in stats_map:
+            stats_map[aid] = {"submission_count": 0, "graded_count": 0, "pending_count": 0}
+        
+        stats_map[aid]["submission_count"] += 1
+        if s.get("status") == "graded":
+            stats_map[aid]["graded_count"] += 1
+        elif s.get("status") == "pending":
+            stats_map[aid]["pending_count"] += 1
+            
+    # Attach stats
+    for a in assignments:
+        stats = stats_map.get(a["id"], {})
+        a["submission_count"] = stats.get("submission_count", 0)
+        a["graded_count"] = stats.get("graded_count", 0)
+        a["pending_count"] = stats.get("pending_count", 0)
+    
+    return {"assignments": assignments}
+
+
+@app.get("/api/assignments/{assignment_id}")
+def get_assignment(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get assignment details with rubrics"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    result = supabase.table("assignments").select("*").eq("id", assignment_id).limit(1).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    assignment = result.data[0]
+    
+    # Fetch rubrics
+    rubrics = supabase.table("assignment_rubrics").select("*").eq(
+        "assignment_id", assignment_id
+    ).order("order_index").execute()
+    
+    assignment["rubrics"] = rubrics.data or []
+    
+    return {"assignment": assignment}
+
+
+@app.put("/api/assignments/{assignment_id}")
+def update_assignment(
+    assignment_id: str,
+    payload: AssignmentUpdate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Update an assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    existing = supabase.table("assignments").select("teacher_user_id").eq("id", assignment_id).limit(1).execute()
+    if not existing.data or existing.data[0].get("teacher_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    if updates.get("status") == "published":
+        updates["published_at"] = datetime.now(timezone.utc).isoformat()
+    
+    result = supabase.table("assignments").update(updates).eq("id", assignment_id).execute()
+    
+    return {"success": True, "assignment": result.data[0] if result.data else None}
+
+
+@app.delete("/api/assignments/{assignment_id}")
+def delete_assignment(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Delete an assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    existing = supabase.table("assignments").select("teacher_user_id").eq("id", assignment_id).limit(1).execute()
+    if not existing.data or existing.data[0].get("teacher_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    supabase.table("assignments").delete().eq("id", assignment_id).execute()
+    
+    return {"success": True}
+
+
+@app.post("/api/assignments/{assignment_id}/publish")
+def publish_assignment(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Publish a draft assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    result = supabase.table("assignments").update({
+        "status": "published",
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }).eq("id", assignment_id).eq("teacher_user_id", user_id).execute()
+    
+    return {"success": True, "assignment": result.data[0] if result.data else None}
+
+
+@app.post("/api/assignments/{assignment_id}/close")
+def close_assignment(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Close submissions for an assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    result = supabase.table("assignments").update({
+        "status": "closed",
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }).eq("id", assignment_id).eq("teacher_user_id", user_id).execute()
+    
+    return {"success": True}
+
+
+# --- Submissions ---
+
+@app.get("/api/assignments/{assignment_id}/submissions")
+def get_submissions(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get all submissions for an assignment (teacher only)"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify teacher owns assignment
+    assignment = supabase.table("assignments").select("*").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data or assignment.data[0].get("teacher_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    submissions = supabase.table("assignment_submissions").select("*").eq(
+        "assignment_id", assignment_id
+    ).order("submitted_at", desc=True).execute()
+    
+    # Fetch student info for each submission
+    student_ids = [s.get("student_user_id") for s in (submissions.data or [])]
+    student_info = {}
+    if student_ids:
+        profiles = supabase.table("user_profiles").select("auth_user_id,name").in_(
+            "auth_user_id", student_ids
+        ).execute()
+        for p in (profiles.data or []):
+            student_info[p.get("auth_user_id")] = p.get("name", "Unknown")
+    
+    for sub in (submissions.data or []):
+        sub["student_name"] = student_info.get(sub.get("student_user_id"), "Unknown")
+    
+    return {"submissions": submissions.data or [], "assignment": assignment.data[0]}
+
+
+@app.get("/api/assignments/{assignment_id}/duplicates")
+def get_duplicate_submissions(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get duplicate file submissions based on file hash"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify teacher owns assignment
+    assignment = supabase.table("assignments").select("teacher_user_id").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data or assignment.data[0].get("teacher_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Find duplicate files by hash
+    files = supabase.table("assignment_submission_files").select(
+        "id,submission_id,student_user_id,file_name,file_hash,file_size_bytes"
+    ).eq("assignment_id", assignment_id).execute()
+    
+    # Group by hash
+    hash_groups = {}
+    for f in (files.data or []):
+        file_hash = f.get("file_hash")
+        if not file_hash:
+            continue
+        if file_hash not in hash_groups:
+            hash_groups[file_hash] = []
+        hash_groups[file_hash].append(f)
+    
+    # Filter to only duplicates (2+ files with same hash)
+    duplicates = []
+    for file_hash, file_list in hash_groups.items():
+        if len(file_list) > 1:
+            student_ids = [f.get("student_user_id") for f in file_list]
+            # Fetch student names
+            profiles = supabase.table("user_profiles").select("auth_user_id,full_name").in_(
+                "auth_user_id", student_ids
+            ).execute()
+            name_map = {p.get("auth_user_id"): p.get("full_name") for p in (profiles.data or [])}
+            
+            for f in file_list:
+                f["student_name"] = name_map.get(f.get("student_user_id"), "Unknown")
+            
+            duplicates.append({
+                "file_hash": file_hash,
+                "file_size_bytes": file_list[0].get("file_size_bytes"),
+                "count": len(file_list),
+                "submissions": file_list
+            })
+    
+    return {"duplicates": duplicates}
+
+
+@app.put("/api/assignments/{assignment_id}/submissions/{submission_id}/grade")
+def grade_submission(
+    assignment_id: str,
+    submission_id: str,
+    payload: GradeSubmission,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Grade a submission"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify teacher owns assignment
+    assignment = supabase.table("assignments").select("teacher_user_id").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data or assignment.data[0].get("teacher_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    updates = {
+        "total_marks": payload.total_marks,
+        "rubric_scores": payload.rubric_scores or {},
+        "feedback": payload.feedback,
+        "graded_by": user_id,
+        "graded_at": datetime.now(timezone.utc).isoformat(),
+        "status": "graded",
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    result = supabase.table("assignment_submissions").update(updates).eq("id", submission_id).execute()
+    
+    return {"success": True, "submission": result.data[0] if result.data else None}
+
+
+# --- Student Endpoints ---
+
+@app.get("/api/student/assignments")
+def get_student_assignments(authorization: Optional[str] = Header(default=None)):
+    """Get assignments for the student's class"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Get student's education info to determine class
+    profile = supabase.table("user_profiles").select("id").eq("auth_user_id", user_id).limit(1).execute()
+    if not profile.data:
+        return {"assignments": []}
+    
+    profile_id = profile.data[0].get("id")
+    education = supabase.table("user_education").select("*").eq("user_profile_id", profile_id).limit(1).execute()
+    
+    if not education.data:
+        return {"assignments": []}
+    
+    edu = education.data[0]
+    
+    # Find matching classes
+    class_query = supabase.table("teacher_classes").select("id")
+    for col, val in [
+        ("batch_id", edu.get("batch_id")),
+        ("department_id", edu.get("department_id")),
+        ("semester", edu.get("current_semester")),
+        ("section", edu.get("section")),
+    ]:
+        if val:
+            class_query = class_query.eq(col, val)
+    
+    classes = class_query.execute()
+    class_ids = [c.get("id") for c in (classes.data or [])]
+    
+    if not class_ids:
+        return {"assignments": []}
+    
+    # Get published/closed assignments for these classes
+    assignments = supabase.table("assignments").select("*").in_(
+        "class_id", class_ids
+    ).in_("status", ["published", "closed"]).order("due_date").execute()
+    
+    # Get student's submissions
+    submissions = supabase.table("assignment_submissions").select(
+        "assignment_id,status,total_marks,submitted_at"
+    ).eq("student_user_id", user_id).execute()
+    
+    sub_map = {s.get("assignment_id"): s for s in (submissions.data or [])}
+    
+    for a in (assignments.data or []):
+        sub = sub_map.get(a.get("id"))
+        a["submission"] = sub
+        a["is_submitted"] = bool(sub and sub.get("status") != "pending")
+        a["is_graded"] = bool(sub and sub.get("status") == "graded")
+    
+    return {"assignments": assignments.data or []}
+
+
+@app.get("/api/student/assignments/{assignment_id}")
+def get_student_assignment(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get assignment details for student"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    assignment = supabase.table("assignments").select("*").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    a = assignment.data[0]
+    
+    # Fetch rubrics
+    rubrics = supabase.table("assignment_rubrics").select("*").eq(
+        "assignment_id", assignment_id
+    ).order("order_index").execute()
+    a["rubrics"] = rubrics.data or []
+    
+    # Fetch student's submission if exists
+    submission = supabase.table("assignment_submissions").select("*").eq(
+        "assignment_id", assignment_id
+    ).eq("student_user_id", user_id).limit(1).execute()
+    a["my_submission"] = submission.data[0] if submission.data else None
+    
+    return {"assignment": a}
+
+
+@app.post("/api/student/assignments/{assignment_id}/submit")
+def submit_assignment(
+    assignment_id: str,
+    payload: SubmissionCreate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Submit or update assignment submission"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Check assignment exists and is open
+    assignment = supabase.table("assignments").select("*").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    a = assignment.data[0]
+    
+    # Check deadline
+    due_date = datetime.fromisoformat(a.get("due_date").replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    
+    if now > due_date and not a.get("allow_late_submission"):
+        # Check for extension
+        extension = supabase.table("assignment_extensions").select("new_due_date").eq(
+            "assignment_id", assignment_id
+        ).eq("student_user_id", user_id).eq("status", "approved").limit(1).execute()
+        
+        if extension.data:
+            ext_date = datetime.fromisoformat(extension.data[0].get("new_due_date").replace("Z", "+00:00"))
+            if now > ext_date:
+                raise HTTPException(status_code=400, detail="Submission deadline has passed")
+        else:
+            raise HTTPException(status_code=400, detail="Submission deadline has passed")
+    
+    # Check if submission exists
+    existing = supabase.table("assignment_submissions").select("id,version").eq(
+        "assignment_id", assignment_id
+    ).eq("student_user_id", user_id).limit(1).execute()
+    
+    submission_data = {
+        "file_urls": payload.file_urls or [],
+        "text_content": payload.text_content,
+        "is_draft": payload.is_draft or False,
+        "status": "pending" if payload.is_draft else "submitted",
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if not payload.is_draft:
+        submission_data["submitted_at"] = datetime.now(timezone.utc).isoformat()
+    
+    if existing.data:
+        # Update existing
+        submission_data["version"] = (existing.data[0].get("version") or 1) + 1
+        result = supabase.table("assignment_submissions").update(submission_data).eq(
+            "id", existing.data[0].get("id")
+        ).execute()
+        submission_id = existing.data[0].get("id")
+    else:
+        # Create new
+        submission_data["assignment_id"] = assignment_id
+        submission_data["student_user_id"] = user_id
+        submission_data["version"] = 1
+        result = supabase.table("assignment_submissions").insert(submission_data).execute()
+        submission_id = result.data[0].get("id") if result.data else None
+    
+    # Store file metadata with hash for duplicate detection
+    if submission_id and payload.file_urls:
+        # Clear old files
+        supabase.table("assignment_submission_files").delete().eq("submission_id", submission_id).execute()
+        
+        # Insert new file records
+        for file_info in payload.file_urls:
+            file_record = {
+                "submission_id": submission_id,
+                "assignment_id": assignment_id,
+                "student_user_id": user_id,
+                "file_url": file_info.get("url", ""),
+                "file_name": file_info.get("name", ""),
+                "file_size_bytes": file_info.get("size", 0),
+                "file_type": file_info.get("type", ""),
+                "file_hash": file_info.get("hash", "")  # Hash calculated on frontend
+            }
+            supabase.table("assignment_submission_files").insert(file_record).execute()
+    
+    return {"success": True, "submission": result.data[0] if result.data else None}
+
+
+# --- File Upload ---
+
+@app.post("/api/assignments/upload")
+async def upload_assignment_file(
+    file: UploadFile = File(...),
+    assignment_id: str = Form(...),
+    authorization: Optional[str] = Header(default=None)
+):
+    """Upload file to assignments bucket and return URL with hash"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Read file content
+    content = await file.read()
+    
+    # Calculate SHA-256 hash for duplicate detection
+    # Default to binary content hash
+    file_hash = hashlib.sha256(content).hexdigest()
+    
+    # Try text-based hashing for PDFs (robust against metadata/filename changes)
+    if (file.filename or "").lower().endswith(".pdf"):
+        try:
+            import fitz  # PyMuPDF
+            with fitz.open(stream=content, filetype="pdf") as doc:
+                text = ""
+                for page in doc:
+                    text += page.get_text()
+                
+                # Only use text hash if we extracted significant text
+                if len(text.strip()) > 50:
+                    # Normalize text (remove whitespace noise)
+                    clean_text = "".join(text.split())
+                    file_hash = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
+                    print(f"[Duplicate Check] Used text hash for {file.filename}")
+        except Exception as e:
+            print(f"[Duplicate Check] Text extraction failed: {e}, falling back to binary hash")
+    
+    # Generate unique filename
+    ext = os.path.splitext(file.filename)[1] if file.filename else ""
+    unique_name = f"{assignment_id}/{user_id}/{uuid.uuid4()}{ext}"
+    
+    # Upload to Supabase bucket
+    try:
+        result = supabase.storage.from_("assignments").upload(
+            unique_name,
+            content,
+            {"content-type": file.content_type or "application/octet-stream"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    
+    # Get public URL
+    public_url = supabase.storage.from_("assignments").get_public_url(unique_name)
+    
+    return {
+        "success": True,
+        "file": {
+            "url": public_url,
+            "name": file.filename,
+            "size": len(content),
+            "type": file.content_type,
+            "hash": file_hash
+        }
+    }
+
+
+# --- Extensions ---
+
+@app.post("/api/student/assignments/{assignment_id}/request-extension")
+def request_extension(
+    assignment_id: str,
+    payload: ExtensionRequest,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Request deadline extension"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Check if request already exists
+    existing = supabase.table("assignment_extensions").select("id").eq(
+        "assignment_id", assignment_id
+    ).eq("student_user_id", user_id).limit(1).execute()
+    
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Extension request already exists")
+    
+    result = supabase.table("assignment_extensions").insert({
+        "assignment_id": assignment_id,
+        "student_user_id": user_id,
+        "requested_date": payload.requested_date,
+        "reason": payload.reason,
+        "status": "pending"
+    }).execute()
+    
+    return {"success": True, "extension": result.data[0] if result.data else None}
+
+
+@app.get("/api/assignments/{assignment_id}/extensions")
+def get_extensions(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get extension requests for an assignment (teacher only)"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    extensions = supabase.table("assignment_extensions").select("*").eq(
+        "assignment_id", assignment_id
+    ).order("created_at", desc=True).execute()
+    
+    # Fetch student names
+    student_ids = [e.get("student_user_id") for e in (extensions.data or [])]
+    if student_ids:
+        profiles = supabase.table("user_profiles").select("auth_user_id,full_name").in_(
+            "auth_user_id", student_ids
+        ).execute()
+        name_map = {p.get("auth_user_id"): p.get("full_name") for p in (profiles.data or [])}
+        for e in (extensions.data or []):
+            e["student_name"] = name_map.get(e.get("student_user_id"), "Unknown")
+    
+    return {"extensions": extensions.data or []}
+
+
+@app.put("/api/assignments/extensions/{extension_id}")
+def respond_to_extension(
+    extension_id: str,
+    payload: ExtensionResponse,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Approve or deny extension request (teacher only)"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    updates = {
+        "status": payload.status,
+        "approved_by": user_id if payload.status == "approved" else None,
+    }
+    
+    if payload.new_due_date:
+        updates["new_due_date"] = payload.new_due_date
+    
+    result = supabase.table("assignment_extensions").update(updates).eq("id", extension_id).execute()
+    
+    return {"success": True, "extension": result.data[0] if result.data else None}
+
+
+# --- Comments ---
+
+@app.get("/api/assignments/{assignment_id}/comments")
+def get_comments(
+    assignment_id: str,
+    submission_id: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Get comments for assignment or submission"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    query = supabase.table("assignment_comments").select("*").eq("assignment_id", assignment_id)
+    
+    if submission_id:
+        query = query.eq("submission_id", submission_id)
+    
+    comments = query.order("created_at").execute()
+    
+    # Fetch user names
+    user_ids = list(set([c.get("user_id") for c in (comments.data or [])]))
+    if user_ids:
+        profiles = supabase.table("user_profiles").select("auth_user_id,full_name").in_(
+            "auth_user_id", user_ids
+        ).execute()
+        name_map = {p.get("auth_user_id"): p.get("full_name") for p in (profiles.data or [])}
+        for c in (comments.data or []):
+            c["user_name"] = name_map.get(c.get("user_id"), "Unknown")
+    
+    return {"comments": comments.data or []}
+
+
+class CommentCreate(BaseModel):
+    content: str
+    submission_id: Optional[str] = None
+    is_private: Optional[bool] = False
+
+
+@app.post("/api/assignments/{assignment_id}/comments")
+def add_comment(
+    assignment_id: str,
+    payload: CommentCreate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Add comment to assignment or submission"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    result = supabase.table("assignment_comments").insert({
+        "assignment_id": assignment_id,
+        "submission_id": payload.submission_id,
+        "user_id": user_id,
+        "content": payload.content,
+        "is_private": payload.is_private or False
+    }).execute()
+    
+    return {"success": True, "comment": result.data[0] if result.data else None}
+
+
+# --- Analytics ---
+
+@app.get("/api/assignments/{assignment_id}/analytics")
+def get_assignment_analytics(assignment_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get analytics for an assignment"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Get assignment and class info
+    assignment = supabase.table("assignments").select("*").eq("id", assignment_id).limit(1).execute()
+    if not assignment.data:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    a = assignment.data[0]
+    
+    # Get all submissions
+    submissions = supabase.table("assignment_submissions").select("*").eq(
+        "assignment_id", assignment_id
+    ).execute()
+    
+    subs = submissions.data or []
+    
+    # Calculate stats
+    total_submitted = len([s for s in subs if s.get("status") != "pending"])
+    total_graded = len([s for s in subs if s.get("status") == "graded"])
+    total_pending = len([s for s in subs if s.get("status") == "pending"])
+    
+    grades = [s.get("total_marks") for s in subs if s.get("total_marks") is not None]
+    avg_grade = sum(grades) / len(grades) if grades else 0
+    max_grade = max(grades) if grades else 0
+    min_grade = min(grades) if grades else 0
+    
+    # Late submissions
+    due_date = datetime.fromisoformat(a.get("due_date").replace("Z", "+00:00"))
+    late_count = 0
+    for s in subs:
+        if s.get("submitted_at"):
+            sub_date = datetime.fromisoformat(s.get("submitted_at").replace("Z", "+00:00"))
+            if sub_date > due_date:
+                late_count += 1
+    
+    # Grade distribution
+    grade_ranges = {"0-40": 0, "41-60": 0, "61-80": 0, "81-100": 0}
+    max_marks = a.get("max_marks", 100)
+    for g in grades:
+        pct = (g / max_marks) * 100 if max_marks else 0
+        if pct <= 40:
+            grade_ranges["0-40"] += 1
+        elif pct <= 60:
+            grade_ranges["41-60"] += 1
+        elif pct <= 80:
+            grade_ranges["61-80"] += 1
+        else:
+            grade_ranges["81-100"] += 1
+    
+    return {
+        "analytics": {
+            "total_submitted": total_submitted,
+            "total_graded": total_graded,
+            "total_pending": total_pending,
+            "late_submissions": late_count,
+            "average_grade": round(avg_grade, 2),
+            "max_grade": max_grade,
+            "min_grade": min_grade,
+            "grade_distribution": grade_ranges
+        }
+    }
+
+
+# --- Templates ---
+
+@app.get("/api/assignment-templates")
+def list_templates(authorization: Optional[str] = Header(default=None)):
+    """List assignment templates"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    templates = supabase.table("assignment_templates").select("*").eq(
+        "teacher_user_id", user_id
+    ).order("created_at", desc=True).execute()
+    
+    return {"templates": templates.data or []}
+
+
+class TemplateCreate(BaseModel):
+    title: str
+    template_data: Dict[str, Any]
+
+
+@app.post("/api/assignment-templates")
+def create_template(payload: TemplateCreate, authorization: Optional[str] = Header(default=None)):
+    """Save assignment as template"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    result = supabase.table("assignment_templates").insert({
+        "teacher_user_id": user_id,
+        "title": payload.title,
+        "template_data": payload.template_data
+    }).execute()
+    
+    return {"success": True, "template": result.data[0] if result.data else None}
+
+
+@app.delete("/api/assignment-templates/{template_id}")
+def delete_template(template_id: str, authorization: Optional[str] = Header(default=None)):
+    """Delete a template"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    supabase.table("assignment_templates").delete().eq("id", template_id).eq(
+        "teacher_user_id", user_id
+    ).execute()
+    
+    return {"success": True}
+
+
+# =============================================
+# STUDENT FEEDBACK COLLECTION SYSTEM APIs
+# =============================================
+
+import secrets
+
+class FeedbackFormCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    class_id: Optional[str] = None
+    is_anonymous_display: bool = True
+    settings: Optional[Dict[str, Any]] = None
+    questions: List[Dict[str, Any]] = []
+
+class FeedbackFormUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    class_id: Optional[str] = None
+    is_anonymous_display: Optional[bool] = None
+    settings: Optional[Dict[str, Any]] = None
+    questions: Optional[List[Dict[str, Any]]] = None
+
+class FeedbackSubmission(BaseModel):
+    answers: List[Dict[str, Any]]
+
+class FeedbackAIGenerateRequest(BaseModel):
+    topic: str
+    requirements: Optional[str] = None
+    count: int = 8
+    mix: str = "balanced"  # balanced, rating, text, mcq
+
+def generate_share_code() -> str:
+    """Generate a short unique share code (8 chars)"""
+    return secrets.token_urlsafe(6)[:8]
+
+
+@app.post("/api/feedback/generate-questions")
+def generate_feedback_questions(payload: FeedbackAIGenerateRequest, authorization: Optional[str] = Header(default=None)):
+    """Generate feedback questions using Gemini 2.5 Flash AI"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Build prompt based on mix type
+    mix_instructions = {
+        "balanced": "Include a balanced mix of question types: 2-3 rating questions (1-5 stars), 2-3 scale questions (1-10), 1-2 multiple choice, and 2-3 text/textarea questions.",
+        "rating": "Focus mostly on star rating (1-5) and scale (1-10) questions. Include 1-2 text questions for open feedback.",
+        "text": "Focus mostly on open-ended text and textarea questions. Include 1-2 rating questions.",
+        "mcq": "Focus mostly on multiple choice (mcq_single) and yes/no questions. Include 1-2 text questions."
+    }
+    
+    mix_guide = mix_instructions.get(payload.mix, mix_instructions["balanced"])
+    
+    prompt = f"""You are an expert at creating student feedback survey questions. Generate exactly {payload.count} feedback questions for the following topic:
+
+TOPIC: {payload.topic}
+
+{"ADDITIONAL REQUIREMENTS: " + payload.requirements if payload.requirements else ""}
+
+{mix_guide}
+
+AVAILABLE QUESTION TYPES:
+- "text": Short text answer (single line)
+- "textarea": Long text answer (multiple lines) 
+- "rating": Star rating 1-5
+- "scale": Numeric scale 1-10
+- "mcq_single": Single choice (provide 3-5 options)
+- "mcq_multiple": Multiple choice (provide 3-5 options)
+- "yes_no": Yes/No question (no options needed)
+- "dropdown": Dropdown select (provide 3-5 options)
+
+RESPOND WITH ONLY A VALID JSON ARRAY. Each question object must have:
+- "question_type": one of the types above
+- "question_text": the question text
+- "options": array of option strings (only for mcq_single, mcq_multiple, dropdown)
+
+Example:
+[
+  {{"question_type": "rating", "question_text": "How would you rate the overall teaching quality?", "options": null}},
+  {{"question_type": "mcq_single", "question_text": "How often did you attend the classes?", "options": ["Always", "Most of the time", "Sometimes", "Rarely", "Never"]}},
+  {{"question_type": "textarea", "question_text": "What improvements would you suggest?", "options": null}}
+]
+
+Generate {payload.count} professional, insightful feedback questions. Output ONLY the JSON array, no other text."""
+
+    try:
+        import google.generativeai as genai
+        
+        # Use Gemini 2.5 Flash as specified
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        
+        response_text = response.text.strip()
+        
+        # Clean up response - extract JSON array
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+        
+        # Find the JSON array
+        start_idx = response_text.find("[")
+        end_idx = response_text.rfind("]") + 1
+        if start_idx != -1 and end_idx > start_idx:
+            response_text = response_text[start_idx:end_idx]
+        
+        questions = json.loads(response_text)
+        
+        # Validate and clean questions
+        valid_types = ["text", "textarea", "rating", "scale", "mcq_single", "mcq_multiple", "yes_no", "dropdown"]
+        cleaned_questions = []
+        
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_type = q.get("question_type", "text")
+            if q_type not in valid_types:
+                q_type = "text"
+            
+            cleaned = {
+                "question_type": q_type,
+                "question_text": q.get("question_text", ""),
+                "options": q.get("options") if q_type in ["mcq_single", "mcq_multiple", "dropdown"] else None
+            }
+            
+            if cleaned["question_text"]:
+                cleaned_questions.append(cleaned)
+        
+        return {"questions": cleaned_questions[:payload.count], "model": "gemini-2.5-flash"}
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+
+
+@app.get("/api/feedback/forms")
+def list_feedback_forms(authorization: Optional[str] = Header(default=None)):
+    """List all feedback forms for the authenticated teacher"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Get forms with response count
+    forms = supabase.table("feedback_forms").select("*").eq(
+        "teacher_id", user_id
+    ).order("created_at", desc=True).execute()
+    
+    form_data = forms.data or []
+    
+    # Get response counts for each form
+    for form in form_data:
+        resp_count = supabase.table("feedback_responses").select(
+            "id", count="exact"
+        ).eq("form_id", form["id"]).execute()
+        form["response_count"] = resp_count.count or 0
+    
+    return {"forms": form_data}
+
+
+@app.post("/api/feedback/forms")
+def create_feedback_form(payload: FeedbackFormCreate, authorization: Optional[str] = Header(default=None)):
+    """Create a new feedback form with questions"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Create the form
+    form_data = {
+        "teacher_id": user_id,
+        "title": payload.title,
+        "description": payload.description,
+        "class_id": payload.class_id,
+        "is_anonymous_display": payload.is_anonymous_display,
+        "settings": payload.settings or {},
+        "status": "draft"
+    }
+    
+    result = supabase.table("feedback_forms").insert(form_data).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create form")
+    
+    form = result.data[0]
+    form_id = form["id"]
+    
+    # Add questions
+    if payload.questions:
+        questions_data = []
+        for idx, q in enumerate(payload.questions):
+            questions_data.append({
+                "form_id": form_id,
+                "question_type": q.get("question_type", "text"),
+                "question_text": q.get("question_text", ""),
+                "description": q.get("description"),
+                "options": q.get("options"),
+                "settings": q.get("settings", {}),
+                "display_order": idx
+            })
+        
+        if questions_data:
+            supabase.table("feedback_questions").insert(questions_data).execute()
+    
+    return {"success": True, "form": form}
+
+
+@app.get("/api/feedback/forms/{form_id}")
+def get_feedback_form(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get a feedback form with its questions"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Get form
+    form_res = supabase.table("feedback_forms").select("*").eq(
+        "id", form_id
+    ).eq("teacher_id", user_id).execute()
+    
+    if not form_res.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    form = form_res.data[0]
+    
+    # Get questions
+    questions = supabase.table("feedback_questions").select("*").eq(
+        "form_id", form_id
+    ).order("display_order").execute()
+    
+    form["questions"] = questions.data or []
+    
+    # Get response count
+    resp_count = supabase.table("feedback_responses").select(
+        "id", count="exact"
+    ).eq("form_id", form_id).execute()
+    form["response_count"] = resp_count.count or 0
+    
+    return form
+
+
+@app.put("/api/feedback/forms/{form_id}")
+def update_feedback_form(form_id: str, payload: FeedbackFormUpdate, authorization: Optional[str] = Header(default=None)):
+    """Update a feedback form and its questions"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    existing = supabase.table("feedback_forms").select("id, status").eq(
+        "id", form_id
+    ).eq("teacher_id", user_id).execute()
+    
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # Update form fields
+    update_data = {"updated_at": "now()"}
+    if payload.title is not None:
+        update_data["title"] = payload.title
+    if payload.description is not None:
+        update_data["description"] = payload.description
+    if payload.class_id is not None:
+        update_data["class_id"] = payload.class_id
+    if payload.is_anonymous_display is not None:
+        update_data["is_anonymous_display"] = payload.is_anonymous_display
+    if payload.settings is not None:
+        update_data["settings"] = payload.settings
+    
+    supabase.table("feedback_forms").update(update_data).eq("id", form_id).execute()
+    
+    # Update questions if provided
+    if payload.questions is not None:
+        # Delete existing questions
+        supabase.table("feedback_questions").delete().eq("form_id", form_id).execute()
+        
+        # Insert new questions
+        if payload.questions:
+            questions_data = []
+            for idx, q in enumerate(payload.questions):
+                questions_data.append({
+                    "form_id": form_id,
+                    "question_type": q.get("question_type", "text"),
+                    "question_text": q.get("question_text", ""),
+                    "description": q.get("description"),
+                    "options": q.get("options"),
+                    "settings": q.get("settings", {}),
+                    "display_order": idx
+                })
+            
+            supabase.table("feedback_questions").insert(questions_data).execute()
+    
+    return {"success": True}
+
+
+@app.delete("/api/feedback/forms/{form_id}")
+def delete_feedback_form(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Delete a feedback form"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    supabase.table("feedback_forms").delete().eq("id", form_id).eq(
+        "teacher_id", user_id
+    ).execute()
+    
+    return {"success": True}
+
+
+@app.post("/api/feedback/forms/{form_id}/publish")
+def publish_feedback_form(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Publish a feedback form and generate a share code"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    existing = supabase.table("feedback_forms").select("id, share_code, status").eq(
+        "id", form_id
+    ).eq("teacher_id", user_id).execute()
+    
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    form = existing.data[0]
+    
+    # Generate share code if not exists
+    share_code = form.get("share_code") or generate_share_code()
+    
+    supabase.table("feedback_forms").update({
+        "status": "published",
+        "share_code": share_code,
+        "updated_at": "now()"
+    }).eq("id", form_id).execute()
+    
+    return {"success": True, "share_code": share_code}
+
+
+@app.post("/api/feedback/forms/{form_id}/close")
+def close_feedback_form(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Close a feedback form to stop accepting submissions"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    supabase.table("feedback_forms").update({
+        "status": "closed",
+        "updated_at": "now()"
+    }).eq("id", form_id).eq("teacher_id", user_id).execute()
+    
+    return {"success": True}
+
+
+# --- Public/Student facing endpoints ---
+
+@app.get("/api/feedback/f/{share_code}")
+def get_feedback_form_public(share_code: str, authorization: Optional[str] = Header(default=None)):
+    """Get a published feedback form for student submission"""
+    supabase = get_supabase()
+    
+    # Get form by share code
+    form_res = supabase.table("feedback_forms").select("*").eq(
+        "share_code", share_code
+    ).execute()
+    
+    if not form_res.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    form = form_res.data[0]
+    
+    if form["status"] != "published":
+        raise HTTPException(status_code=400, detail="Form is not accepting submissions")
+    
+    # Get questions
+    questions = supabase.table("feedback_questions").select(
+        "id, question_type, question_text, description, options, settings, display_order"
+    ).eq("form_id", form["id"]).order("display_order").execute()
+    
+    # Get teacher info
+    teacher = supabase.table("teacher_profiles").select("name").eq(
+        "auth_user_id", form["teacher_id"]
+    ).execute()
+    
+    teacher_name = teacher.data[0]["name"] if teacher.data else "Teacher"
+    
+    # Check if user already submitted
+    already_submitted = False
+    user_id = get_user_id_from_token(authorization)
+    if user_id:
+        existing = supabase.table("feedback_responses").select("id").eq(
+            "form_id", form["id"]
+        ).eq("student_id", user_id).execute()
+        already_submitted = bool(existing.data)
+    
+    return {
+        "id": form["id"],
+        "title": form["title"],
+        "description": form["description"],
+        "is_anonymous_display": form["is_anonymous_display"],
+        "teacher_name": teacher_name,
+        "questions": questions.data or [],
+        "already_submitted": already_submitted
+    }
+
+
+@app.post("/api/feedback/f/{share_code}/submit")
+def submit_feedback(share_code: str, payload: FeedbackSubmission, authorization: Optional[str] = Header(default=None)):
+    """Submit a feedback response"""
+    supabase = get_supabase()
+    
+    # Get form
+    form_res = supabase.table("feedback_forms").select("id, status").eq(
+        "share_code", share_code
+    ).execute()
+    
+    if not form_res.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    form = form_res.data[0]
+    
+    if form["status"] != "published":
+        raise HTTPException(status_code=400, detail="Form is not accepting submissions")
+    
+    # Get student info (names stored even if displayed as anonymous)
+    user_id = get_user_id_from_token(authorization)
+    student_name = None
+    student_email = None
+    
+    if user_id:
+        # Check if already submitted
+        existing = supabase.table("feedback_responses").select("id").eq(
+            "form_id", form["id"]
+        ).eq("student_id", user_id).execute()
+        
+        if existing.data:
+            raise HTTPException(status_code=400, detail="You have already submitted feedback for this form")
+        
+        # Get student profile
+        profile = supabase.table("user_profiles").select("name, email").eq(
+            "auth_user_id", user_id
+        ).execute()
+        
+        if profile.data:
+            student_name = profile.data[0].get("name")
+            student_email = profile.data[0].get("email")
+    
+    # Create response
+    response_data = {
+        "form_id": form["id"],
+        "student_id": user_id,
+        "student_name": student_name,
+        "student_email": student_email
+    }
+    
+    response_res = supabase.table("feedback_responses").insert(response_data).execute()
+    
+    if not response_res.data:
+        raise HTTPException(status_code=500, detail="Failed to submit feedback")
+    
+    response_id = response_res.data[0]["id"]
+    
+    # Insert answers
+    if payload.answers:
+        answers_data = []
+        for answer in payload.answers:
+            answers_data.append({
+                "response_id": response_id,
+                "question_id": answer.get("question_id"),
+                "answer_text": answer.get("answer_text"),
+                "answer_options": answer.get("answer_options"),
+                "answer_rating": answer.get("answer_rating")
+            })
+        
+        if answers_data:
+            supabase.table("feedback_answers").insert(answers_data).execute()
+    
+    return {"success": True, "message": "Thank you for your feedback!"}
+
+
+# --- Teacher responses view ---
+
+@app.get("/api/feedback/forms/{form_id}/responses")
+def get_feedback_responses(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get all responses for a feedback form (teacher only)"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    form = supabase.table("feedback_forms").select("id, title").eq(
+        "id", form_id
+    ).eq("teacher_id", user_id).execute()
+    
+    if not form.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # Get all responses
+    responses = supabase.table("feedback_responses").select("*").eq(
+        "form_id", form_id
+    ).order("submitted_at", desc=True).execute()
+    
+    # Get answers for each response
+    response_data = []
+    for resp in (responses.data or []):
+        answers = supabase.table("feedback_answers").select("*").eq(
+            "response_id", resp["id"]
+        ).execute()
+        resp["answers"] = answers.data or []
+        response_data.append(resp)
+    
+    # Get questions for context
+    questions = supabase.table("feedback_questions").select("*").eq(
+        "form_id", form_id
+    ).order("display_order").execute()
+    
+    return {
+        "form": form.data[0],
+        "questions": questions.data or [],
+        "responses": response_data,
+        "total_responses": len(response_data)
+    }
+
+
+@app.get("/api/feedback/forms/{form_id}/analytics")
+def get_feedback_analytics(form_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get analytics for a feedback form"""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_supabase()
+    
+    # Verify ownership
+    form = supabase.table("feedback_forms").select("*").eq(
+        "id", form_id
+    ).eq("teacher_id", user_id).execute()
+    
+    if not form.data:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # Get questions
+    questions = supabase.table("feedback_questions").select("*").eq(
+        "form_id", form_id
+    ).order("display_order").execute()
+    
+    # Get all answers
+    responses = supabase.table("feedback_responses").select("id").eq(
+        "form_id", form_id
+    ).execute()
+    
+    total_responses = len(responses.data or [])
+    response_ids = [r["id"] for r in (responses.data or [])]
+    
+    analytics = {
+        "total_responses": total_responses,
+        "questions": []
+    }
+    
+    for q in (questions.data or []):
+        q_analytics = {
+            "id": q["id"],
+            "question_text": q["question_text"],
+            "question_type": q["question_type"]
+        }
+        
+        # Get answers for this question
+        if response_ids:
+            answers = supabase.table("feedback_answers").select("*").eq(
+                "question_id", q["id"]
+            ).in_("response_id", response_ids).execute()
+            
+            answer_list = answers.data or []
+            
+            if q["question_type"] in ["rating", "scale"]:
+                # Calculate average rating
+                ratings = [a["answer_rating"] for a in answer_list if a.get("answer_rating") is not None]
+                if ratings:
+                    q_analytics["average"] = round(sum(ratings) / len(ratings), 2)
+                    q_analytics["distribution"] = {}
+                    for r in ratings:
+                        q_analytics["distribution"][str(r)] = q_analytics["distribution"].get(str(r), 0) + 1
+                else:
+                    q_analytics["average"] = 0
+                    
+            elif q["question_type"] in ["mcq_single", "mcq_multiple", "yes_no", "dropdown"]:
+                # Calculate option distribution
+                options = q.get("options") or []
+                distribution = {str(i): 0 for i in range(len(options))}
+                
+                for a in answer_list:
+                    opts = a.get("answer_options") or []
+                    for opt_idx in opts:
+                        if str(opt_idx) in distribution:
+                            distribution[str(opt_idx)] += 1
+                
+                q_analytics["distribution"] = distribution
+                q_analytics["options"] = options
+                
+            elif q["question_type"] in ["text", "textarea"]:
+                # Return text responses
+                q_analytics["responses"] = [a.get("answer_text", "") for a in answer_list if a.get("answer_text")]
+        
+        analytics["questions"].append(q_analytics)
+    
+    return analytics
