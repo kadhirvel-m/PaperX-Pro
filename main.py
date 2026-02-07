@@ -1624,7 +1624,7 @@ SERPAPI_API_KEY = (os.getenv("SERPAPI_API_KEY", "") or "").strip()
 SERPAPI_ENABLED = os.getenv("ENABLE_SERPAPI", "true").strip().lower() in {"1", "true", "yes", "on"}
 SERPAPI_TIMEOUT_SEC = float(os.getenv("SERPAPI_TIMEOUT_SEC", "8"))
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY", "") or "").strip()
-GEMINI_NOTES_MODEL = os.getenv("GEMINI_NOTES_MODEL", "gemini-2.5-flash")
+GEMINI_NOTES_MODEL = os.getenv("GEMINI_NOTES_MODEL", "gemini-3-pro-preview")
 MAX_TRANSCRIPT_CHARS_FOR_NOTES = int(os.getenv("TRANSCRIPT_NOTES_MAX_CHARS", "20000"))
 
 # Default domains for notes/web search when DB has no config yet
@@ -2151,15 +2151,24 @@ def assemble_context_for_llm(pages: List[PageExtract], merged_titles: List[str],
 
 SYSTEM_INSTRUCTIONS = """You are a senior educational writer building accurate, well-structured notes for college students in India.
 
+PRIMARY GOAL:
+Produce notes that are **accurate, complete, and strictly relevant** to the given topic.  
+Use the provided context **only where it is clearly correct and directly applicable**.  
+If any part of the context is **irrelevant, weakly related, outdated, or incorrect**, **IGNORE it completely** and rely on your **own expert knowledge** instead.
+
 CRITICAL RULES:
-- Use ONLY the source excerpts provided; do not invent facts. If a fact is not supported, mark it as [needs review].
+- If information is missing, **generate it yourself accurately**.
+- Use ONLY content that genuinely matches the topic.
+- Do NOT force‑fit unrelated context.
+- Do NOT include phrases like *"needs review"*, *"may vary"*, or *"depends"*.
+- Ensure **conceptual correctness suitable for university exams**.
 - Respect section headings actually observed on the referenced pages. You may merge similar headings (e.g., Advantages/Pros).
 - You MUST also include these blocks even if not present: Introduction, TL;DR in short simple points, Examples, Conclusion, Memory Aids, Common Mistakes.
 - Keep explanations concise but complete; use bullet points where helpful.
 - Include at least one Mermaid diagram when process/relationships are relevant.
 - Every non-obvious claim MUST carry an inline citation like [GFG], [TP], [Scaler], [Wiki], or [TPT] mapped in the CITATIONS section.
 - Prefer plain text + Mermaid diagrams; do not embed external images.
- - Bold important keywords, symbols, and technical terms using Markdown **double asterisks**. Examples: **epsilon-greedy (Îµ-greedy)**, **Markov Decision Process (MDP)**, parameters like **Î¸**, **Î³**, **Î±**, algorithm names like **Q-learning**.
+- Bold important keywords, symbols, and technical terms using Markdown **double asterisks**. Examples: **epsilon-greedy (ε-greedy)**, **Markov Decision Process (MDP)**, parameters like **θ**, **γ**, **α**, algorithm names like **Q-learning**.
 
 OUTPUT FORMAT (STRICT):
 Return a single Markdown document with:
@@ -2171,7 +2180,7 @@ Return a single Markdown document with:
 
 If sources contradict, mark the line with [conflict] and keep both with citations.
 
-Keep it under ~1200â€“1500 words unless the topic is inherently longer.
+Keep it under ~1200–1500 words unless the topic is inherently longer.
 """
 
 
@@ -2242,18 +2251,30 @@ def generate_notes_markdown(topic: str, *, degree: Optional[str] = None) -> str:
     user_prompt = f"""
 You will compose comprehensive, exam-ready Markdown notes for the topic "{topic}".
 
+PRIMARY GOAL:
+Produce notes that are **accurate, complete, and strictly relevant** to the given topic.  
+Use the provided context **only where it is clearly correct and directly applicable**.  
+If any part of the context is **irrelevant, weakly related, outdated, or incorrect**, **IGNORE it completely** and rely on your **own expert knowledge** instead.
+
 Context:
 {context}
 
 Instructions:
-- Create DETAILED, THOROUGH notes - students need complete understanding for exams.
-- Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
-- Normalize section titles only lightly (e.g., "Applications" vs. "Use Cases" pick one).
-- Include the compulsory sections even if they were not present in sources.
-- Generate at least one mermaid diagram if suitable (e.g., flow of algorithm, hierarchy, pipeline).
-- Build a final '## CITATIONS' mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to URLs you used.
-- Inline-cite like: "... property ... [GFG]" or "... step ... [Wiki]" after the sentence.
- - Bold important keywords/terms and symbols (e.g., Î¸, Î³, Î±, Îµ-greedy, key definitions) with **...** consistently; avoid over-bolding.
+STRICT CONTENT RULES:
+- Use ONLY content that genuinely matches the topic.
+- Do NOT force‑fit unrelated context.
+- Do NOT include phrases like *"needs review"*, *"may vary"*, or *"depends"*.
+- If information is missing, **generate it yourself accurately**.
+- Ensure **conceptual correctness suitable for university exams**.
+- No hallucinated references; cite only well‑known, credible sources.
+- Maintain a confident academic tone.
+
+STRUCTURE & DEPTH:
+- Write **DETAILED, THOROUGH notes** suitable for scoring high marks.
+- Expand explanations with examples, formulas, workflows, and comparisons where appropriate.
+- Normalize headings lightly (choose the most standard academic term).
+- Maintain logical flow from basics → core concepts → advanced ideas → applications.
+
 
 MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
 - **TL;DR / Quick Summary**: Bullet points for quick revision
@@ -2261,7 +2282,28 @@ MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
 - **Need / Why It Is Required**: What problem does it solve? Why was it developed?
 - **Definition / Core Concept**: Clear, precise technical definition of the "{topic}"
 
-TARGET LENGTH: 1000-2000 words for comprehensive exam preparation.
+FORMATTING RULES:
+- Output must be in **Markdown**.
+- Start with: `# {topic}`
+- **Bold important terms, symbols, equations, and definitions** (use consistently, avoid overuse).
+- Use bullet points, tables, and sub‑headings for clarity.
+
+CITATIONS:
+- Add a final section: **## CITATIONS**
+- Map citation labels to URLs, using only trusted sources:
+  - [GFG] – GeeksforGeeks
+  - [TPT] – TutorialsPoint
+  - [Scaler] – Scaler Topics
+  - [Wiki] – Wikipedia
+  - [TP] – Trusted textbooks / official documentation
+- Inline‑cite like:  
+  "... explanation ... [GFG]" or "... definition ... [Wiki]"
+
+TARGET LENGTH:
+- **1000–2000 words**, unless the topic strictly requires less.
+
+QUALITY BAR:
+The output should be **exam‑ready**, **self‑contained**, and **require no further corrections**.
 
 Start with '# {topic}' and then the sections in a logical order.
 """
@@ -2320,15 +2362,30 @@ You will compose comprehensive, exam-ready Markdown notes for the topic "{topic}
 Context:
 {context}
 
+PRIMARY GOAL:
+Produce notes that are **accurate, complete, and strictly relevant** to the given topic.  
+Use the provided context **only where it is clearly correct and directly applicable**.  
+If any part of the context is **irrelevant, weakly related, outdated, or incorrect**, **IGNORE it completely** and rely on your **own expert knowledge** instead.
+
+Context:
+{context}
+
 Instructions:
-- Create DETAILED, THOROUGH notes - students need complete understanding for exams.
-- Use the source context as foundation, but ADD your expert knowledge to fill gaps and provide complete coverage.
-- Normalize section titles only lightly (e.g., "Applications" vs. "Use Cases" pick one).
-- Include the compulsory sections even if they were not present in sources.
-- Generate at least one mermaid diagram if suitable (e.g., flow of algorithm, hierarchy, pipeline).
-- Build a final '## CITATIONS' mapping labels [GFG], [TPT], [Scaler], [Wiki], [TP] to URLs you used.
-- Inline-cite like: "... property ... [GFG]" or "... step ... [Wiki]" after the sentence.
- - Bold important keywords/terms and symbols (e.g., Î¸, Î³, Î±, Îµ-greedy, key definitions) with **...** consistently; avoid over-bolding.
+STRICT CONTENT RULES:
+- Use ONLY content that genuinely matches the topic.
+- Do NOT force‑fit unrelated context.
+- Do NOT include phrases like *"needs review"*, *"may vary"*, or *"depends"*.
+- If information is missing, **generate it yourself accurately**.
+- Ensure **conceptual correctness suitable for university exams**.
+- No hallucinated references; cite only well‑known, credible sources.
+- Maintain a confident academic tone.
+
+STRUCTURE & DEPTH:
+- Write **DETAILED, THOROUGH notes** suitable for scoring high marks.
+- Expand explanations with examples, formulas, workflows, and comparisons where appropriate.
+- Normalize headings lightly (choose the most standard academic term).
+- Maintain logical flow from basics → core concepts → advanced ideas → applications.
+
 
 MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
 - **TL;DR / Quick Summary**: Bullet points for quick revision
@@ -2336,8 +2393,28 @@ MANDATORY SECTIONS TO INCLUDE (if applicable to the topic):
 - **Need / Why It Is Required**: What problem does it solve? Why was it developed?
 - **Definition / Core Concept**: Clear, precise technical definition of the "{topic}"
 
-TARGET LENGTH: 1000-2000 words for comprehensive exam preparation.
+FORMATTING RULES:
+- Output must be in **Markdown**.
+- Start with: `# {topic}`
+- **Bold important terms, symbols, equations, and definitions** (use consistently, avoid overuse).
+- Use bullet points, tables, and sub‑headings for clarity.
 
+CITATIONS:
+- Add a final section: **## CITATIONS**
+- Map citation labels to URLs, using only trusted sources:
+  - [GFG] – GeeksforGeeks
+  - [TPT] – TutorialsPoint
+  - [Scaler] – Scaler Topics
+  - [Wiki] – Wikipedia
+  - [TP] – Trusted textbooks / official documentation
+- Inline‑cite like:  
+  "... explanation ... [GFG]" or "... definition ... [Wiki]"
+
+TARGET LENGTH:
+- **1000–2000 words**, unless the topic strictly requires less.
+
+QUALITY BAR:
+The output should be **exam‑ready**, **self‑contained**, and **require no further corrections**.
 Start with '# {topic}' and then the sections in a logical order.
 """.strip()
 
