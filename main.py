@@ -20066,6 +20066,255 @@ async def analytics_dashboard_metrics():
         print(f"Dashboard Error: {e}")
         return {"error": str(e)}
 
+
+def _parse_iso_datetime_maybe(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        s = str(value)
+        # Supabase typically returns ISO8601 with Z.
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+@analytics_router.get("/active-users", summary="Active users in last 24h")
+async def analytics_active_users_last_24h(limit: int = Query(200, ge=1, le=2000)):
+    """
+    Returns users with at least one analytics event in the last 24 hours.
+    Sorted by most recent activity (descending).
+
+    For each user:
+    - last_active_24h: most recent event in last 24h
+    - first_active_today / last_active_today: min/max event time for UTC 'today'
+    - interactions_today: count of events for UTC 'today'
+    """
+    supabase = get_service_client()
+
+    # Use server-local timezone for "today" so the UI matches what you expect (morning vs now).
+    supabase = get_service_client()
+
+    local_now = datetime.now().astimezone()
+    local_tz = local_now.tzinfo or timezone.utc
+    now_utc = local_now.astimezone(timezone.utc)
+    since_24h_utc = now_utc - timedelta(hours=24)
+    since_24h = since_24h_utc.isoformat()
+
+    today_start_local_dt = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = today_start_local_dt.isoformat()
+    today_date_local = today_start_local_dt.date()
+
+    # Note: limit is on users; caps below are on rows (sessions/events).
+    sessions_cap = max(5000, min(50000, limit * 250))
+    events_cap = max(5000, min(50000, limit * 250))
+
+    # 1) Sessions: used for accurate first/last activity today
+    s_res = supabase.table("user_sessions").select("user_id,started_at,last_seen_at").gte("last_seen_at", since_24h).order("last_seen_at", desc=True).limit(sessions_cap).execute()
+    sessions = getattr(s_res, "data", []) or []
+
+    # 2) Events: used for interaction counts (and as fallback signal)
+    ev_res = supabase.table("analytics_events").select("user_id,created_at").gte("created_at", since_24h).order("created_at", desc=True).limit(events_cap).execute()
+    events = getattr(ev_res, "data", []) or []
+
+    users: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure(uid: str) -> Dict[str, Any]:
+        st = users.get(uid)
+        if st is None:
+            st = {
+                "user_id": uid,
+                "last_active_24h": None,
+                "first_active_today": None,
+                "last_active_today": None,
+                "interactions_today": 0,
+            }
+            users[uid] = st
+        return st
+
+    # Aggregate sessions
+    for s in sessions:
+        uid = s.get("user_id")
+        if not uid:
+            continue
+        uid = str(uid)
+        started_dt = _parse_iso_datetime_maybe(s.get("started_at"))
+        last_seen_dt = _parse_iso_datetime_maybe(s.get("last_seen_at"))
+        if last_seen_dt is None and started_dt is None:
+            continue
+
+        stats = _ensure(uid)
+
+        # last_active_24h from last_seen
+        if last_seen_dt is not None:
+            last_seen_utc = last_seen_dt.astimezone(timezone.utc)
+            curr_last = stats.get("last_active_24h")
+            if curr_last is None or last_seen_utc > curr_last:
+                stats["last_active_24h"] = last_seen_utc
+
+        # today's first/last: use both started_at and last_seen_at if they fall on local 'today'
+        for dt in (started_dt, last_seen_dt):
+            if dt is None:
+                continue
+            dt_local = dt.astimezone(local_tz)
+            if dt_local.date() != today_date_local:
+                continue
+            dt_utc = dt.astimezone(timezone.utc)
+            fa = stats.get("first_active_today")
+            la = stats.get("last_active_today")
+            if fa is None or dt_utc < fa:
+                stats["first_active_today"] = dt_utc
+            if la is None or dt_utc > la:
+                stats["last_active_today"] = dt_utc
+
+    # Aggregate events (interactions + fallback timestamps)
+    for e in events:
+        uid = e.get("user_id")
+        if not uid:
+            continue
+        uid = str(uid)
+        created_dt = _parse_iso_datetime_maybe(e.get("created_at"))
+        if created_dt is None:
+            continue
+        created_utc = created_dt.astimezone(timezone.utc)
+        created_local = created_dt.astimezone(local_tz)
+
+        stats = _ensure(uid)
+
+        curr_last = stats.get("last_active_24h")
+        if curr_last is None or created_utc > curr_last:
+            stats["last_active_24h"] = created_utc
+
+        if created_local.date() == today_date_local:
+            stats["interactions_today"] += 1
+            fa = stats.get("first_active_today")
+            la = stats.get("last_active_today")
+            if fa is None or created_utc < fa:
+                stats["first_active_today"] = created_utc
+            if la is None or created_utc > la:
+                stats["last_active_today"] = created_utc
+
+    user_ids = list(users.keys())
+
+    # Enrich: profiles (name/email + ids for clg/dept + sem)
+    profiles_by_uid: Dict[str, Dict[str, Any]] = {}
+    profile_id_by_uid: Dict[str, str] = {}
+    if user_ids:
+        try:
+            prof_res = supabase.table("user_profiles").select(
+                "id,auth_user_id,name,email,semester,college_id,department_id,batch_id"
+            ).in_("auth_user_id", user_ids).execute()
+            profiles = getattr(prof_res, "data", []) or []
+            for p in profiles:
+                puid = p.get("auth_user_id")
+                pid = p.get("id")
+                if puid:
+                    profiles_by_uid[str(puid)] = p
+                    if pid:
+                        profile_id_by_uid[str(puid)] = str(pid)
+        except Exception:
+            profiles_by_uid = {}
+            profile_id_by_uid = {}
+
+    # Enrich: latest education row per profile (section + possible overrides)
+    edu_by_profile_id: Dict[str, Dict[str, Any]] = {}
+    profile_ids = [pid for pid in profile_id_by_uid.values() if pid]
+    if profile_ids:
+        try:
+            edu_limit = min(5000, max(500, len(profile_ids) * 10))
+            edu_res = supabase.table("user_education").select(
+                "user_profile_id,current_semester,section,college_id,department_id,updated_at"
+            ).in_("user_profile_id", profile_ids).order("updated_at", desc=True).limit(edu_limit).execute()
+            edu_rows = getattr(edu_res, "data", []) or []
+            for r in edu_rows:
+                upid = r.get("user_profile_id")
+                if not upid:
+                    continue
+                upid = str(upid)
+                if upid not in edu_by_profile_id:
+                    edu_by_profile_id[upid] = r
+        except Exception:
+            edu_by_profile_id = {}
+
+    # Resolve college/department names
+    college_ids: Set[str] = set()
+    dept_ids: Set[str] = set()
+    for uid in user_ids:
+        p = profiles_by_uid.get(uid) or {}
+        pid = profile_id_by_uid.get(uid)
+        edu = edu_by_profile_id.get(pid or "") if pid else None
+        cid = (edu.get("college_id") if edu else None) or p.get("college_id")
+        did = (edu.get("department_id") if edu else None) or p.get("department_id")
+        if cid:
+            college_ids.add(str(cid))
+        if did:
+            dept_ids.add(str(did))
+
+    colleges_map: Dict[str, str] = {}
+    if college_ids:
+        try:
+            c_res = supabase.table("colleges").select("id,name").in_("id", list(college_ids)).execute()
+            for c in (getattr(c_res, "data", []) or []):
+                if c.get("id"):
+                    colleges_map[str(c["id"])] = c.get("name")
+        except Exception:
+            colleges_map = {}
+
+    depts_map: Dict[str, str] = {}
+    if dept_ids:
+        try:
+            d_res = supabase.table("departments").select("id,name").in_("id", list(dept_ids)).execute()
+            for d in (getattr(d_res, "data", []) or []):
+                if d.get("id"):
+                    depts_map[str(d["id"])] = d.get("name")
+        except Exception:
+            depts_map = {}
+
+    rows: List[Dict[str, Any]] = []
+    for uid, stats in users.items():
+        prof = profiles_by_uid.get(uid) or {}
+        pid = profile_id_by_uid.get(uid)
+        edu = edu_by_profile_id.get(pid or "") if pid else None
+
+        sem = None
+        if edu and edu.get("current_semester") is not None:
+            sem = edu.get("current_semester")
+        else:
+            sem = prof.get("semester")
+
+        section_val = (edu.get("section") if edu else None)
+        cid = (edu.get("college_id") if edu else None) or prof.get("college_id")
+        did = (edu.get("department_id") if edu else None) or prof.get("department_id")
+
+        rows.append({
+            "user_id": uid,
+            "name": prof.get("name"),
+            "email": prof.get("email"),
+            "college": colleges_map.get(str(cid)) if cid else None,
+            "department": depts_map.get(str(did)) if did else None,
+            "semester": sem,
+            "section": section_val,
+            "last_active_24h": (stats.get("last_active_24h").isoformat() if stats.get("last_active_24h") else None),
+            "first_active_today": (stats.get("first_active_today").isoformat() if stats.get("first_active_today") else None),
+            "last_active_today": (stats.get("last_active_today").isoformat() if stats.get("last_active_today") else None),
+            "interactions_today": int(stats.get("interactions_today") or 0),
+        })
+
+    rows.sort(key=lambda r: (r.get("last_active_24h") or ""), reverse=True)
+    rows = rows[:limit]
+
+    return {
+        "count_24h": len(users),
+        "since_24h": since_24h,
+        "today_start": today_start,
+        "timezone": str(local_tz),
+        "users": rows,
+    }
+
 app.include_router(analytics_router)
 
 # -------------------- Lcoding Learning Tracks --------------------
@@ -20909,6 +21158,583 @@ async def generate_labx_stream(req: LabXGenerateRequest):
 
 
 app.include_router(labx_router)
+
+
+# ============================================================================
+# STUDYAI - Academic AI Chatbot
+# ============================================================================
+
+studyai_router = APIRouter(prefix="/api/studyai", tags=["StudyAI Chatbot"])
+
+AI_CHAT_CONVERSATIONS_TABLE = "ai_chat_conversations"
+AI_CHAT_MESSAGES_TABLE = "ai_chat_messages"
+
+
+class ChatConversationCreate(BaseModel):
+    title: Optional[str] = "New Chat"
+
+
+class ChatConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    is_public: Optional[bool] = None
+    is_anonymous: Optional[bool] = None
+
+
+class ChatMessageCreate(BaseModel):
+    content: str = Field(..., min_length=1)
+    attachments: Optional[List[Dict[str, Any]]] = []
+    study_mode: Optional[str] = None  # explain, summarize, quiz, solve, compare, outline, flashcards, cite
+
+
+class ChatMessageBookmark(BaseModel):
+    is_bookmarked: bool
+
+
+# System prompt for academic assistant
+STUDYAI_SYSTEM_PROMPT = """You are StudyAI, an advanced academic AI assistant designed specifically for students. Your primary goal is to help students with their academic preparation and learning.
+
+## Core Capabilities:
+1. **Explain concepts** - Break down complex topics into understandable parts with examples
+2. **Summarize content** - Condense long texts into key points and main ideas
+3. **Generate quizzes** - Create MCQ questions to test understanding
+4. **Solve problems** - Show step-by-step solutions with explanations
+5. **Compare concepts** - Highlight similarities and differences between topics
+6. **Create outlines** - Structure content for better organization
+7. **Generate flashcards** - Create study flashcards with Q&A format
+8. **Help with citations** - Assist with proper referencing and citations
+
+## Response Guidelines:
+- Use clear, educational language appropriate for students
+- Include examples when explaining concepts
+- Format responses with proper markdown (headings, lists, code blocks, LaTeX for math)
+- For math equations, use LaTeX notation: $inline$ or $$block$$
+- For code, specify the programming language in code blocks
+- Be encouraging and supportive
+- Ask clarifying questions when the query is ambiguous
+- Cite sources when providing factual information
+
+## Study Mode Behaviors:
+When a specific study mode is requested, adapt your response accordingly:
+- **explain**: Provide detailed explanations with examples and analogies
+- **summarize**: Create concise bullet points of key concepts
+- **quiz**: Generate 5 MCQ questions with answers and explanations
+- **solve**: Show step-by-step problem solving
+- **compare**: Create a comparison table or structured comparison
+- **outline**: Create a hierarchical outline structure
+- **flashcards**: Format as Q: / A: pairs for easy studying
+- **cite**: Help format citations in common styles (APA, MLA, etc.)
+"""
+
+
+def _generate_share_code() -> str:
+    """Generate a unique 8-character share code."""
+    import secrets
+    import string
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(secrets.choice(chars) for _ in range(8))
+
+
+def _build_study_mode_prompt(mode: str, content: str) -> str:
+    """Build a prompt based on the study mode."""
+    mode_prompts = {
+        "explain": f"Please explain the following concept in detail with examples:\n\n{content}",
+        "summarize": f"Please summarize the following content into key points:\n\n{content}",
+        "quiz": f"Please generate 5 multiple choice quiz questions based on the following topic. Include the correct answer and brief explanation for each:\n\n{content}",
+        "solve": f"Please solve the following problem step by step, showing all work:\n\n{content}",
+        "compare": f"Please compare and contrast the following concepts, highlighting similarities and differences:\n\n{content}",
+        "outline": f"Please create a detailed study outline for the following topic:\n\n{content}",
+        "flashcards": f"Please create 10 flashcards (Q&A pairs) for studying the following topic:\n\n{content}",
+        "cite": f"Please help format a proper citation for the following source. Ask clarifying questions if needed:\n\n{content}",
+    }
+    return mode_prompts.get(mode, content)
+
+
+async def _generate_ai_response(messages: List[Dict[str, str]], study_mode: Optional[str] = None) -> str:
+    """Generate AI response using Gemini 2.5 Flash."""
+    if not genai:
+        raise HTTPException(status_code=500, detail="AI service not available")
+    
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+    
+    def _call_gemini():
+        client = genai.Client(api_key=gemini_key)
+        
+        # Build conversation history
+        gemini_messages = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            gemini_messages.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+        
+        # Create chat session with system instruction
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=gemini_messages,
+            config=types.GenerateContentConfig(
+                system_instruction=STUDYAI_SYSTEM_PROMPT,
+                temperature=0.7,
+                max_output_tokens=4096,
+            )
+        )
+        
+        return response.text if hasattr(response, 'text') else str(response)
+    
+    try:
+        result = await run_in_threadpool(_call_gemini)
+        return result
+    except Exception as e:
+        print(f"[StudyAI] Error generating response: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate AI response: {str(e)}")
+
+
+@studyai_router.post("/conversations")
+async def create_conversation(
+    payload: ChatConversationCreate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Create a new chat conversation."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    conversation_data = {
+        "user_id": user_id,
+        "title": (payload.title or "New Chat").strip()[:100],
+    }
+    
+    try:
+        result = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).insert(conversation_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create conversation")
+        return result.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.get("/conversations")
+async def list_conversations(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    authorization: Optional[str] = Header(default=None)
+):
+    """List user's chat conversations."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    try:
+        # Get conversations with latest message preview
+        result = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select(
+            "id, title, share_code, is_public, created_at, updated_at"
+        ).eq("user_id", user_id).order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
+        
+        conversations = result.data or []
+        
+        # Get message count for each conversation
+        for conv in conversations:
+            msg_count = supabase.table(AI_CHAT_MESSAGES_TABLE).select(
+                "id", count="exact"
+            ).eq("conversation_id", conv["id"]).execute()
+            conv["message_count"] = msg_count.count if hasattr(msg_count, 'count') else len(msg_count.data or [])
+        
+        return {"conversations": conversations, "total": len(conversations)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.get("/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: str,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Get a conversation with all its messages."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    try:
+        # Get conversation
+        conv_result = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select("*").eq(
+            "id", conversation_id
+        ).eq("user_id", user_id).limit(1).execute()
+        
+        if not conv_result.data:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        conversation = conv_result.data[0]
+        
+        # Get messages
+        msg_result = supabase.table(AI_CHAT_MESSAGES_TABLE).select("*").eq(
+            "conversation_id", conversation_id
+        ).order("created_at").execute()
+        
+        conversation["messages"] = msg_result.data or []
+        
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.patch("/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    payload: ChatConversationUpdate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Update conversation settings (title, sharing options)."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify ownership
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select("id").eq(
+        "id", conversation_id
+    ).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    update_data = {"updated_at": datetime.utcnow().isoformat()}
+    if payload.title is not None:
+        update_data["title"] = payload.title.strip()[:100]
+    if payload.is_public is not None:
+        update_data["is_public"] = payload.is_public
+    if payload.is_anonymous is not None:
+        update_data["is_anonymous"] = payload.is_anonymous
+    
+    try:
+        result = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).update(update_data).eq(
+            "id", conversation_id
+        ).execute()
+        return result.data[0] if result.data else {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Delete a conversation and all its messages."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify ownership
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select("id").eq(
+        "id", conversation_id
+    ).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    try:
+        # Delete conversation (messages will cascade delete)
+        supabase.table(AI_CHAT_CONVERSATIONS_TABLE).delete().eq("id", conversation_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.post("/conversations/{conversation_id}/messages")
+async def send_message(
+    conversation_id: str,
+    payload: ChatMessageCreate,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Send a message and get AI response."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify ownership
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select("id, title").eq(
+        "id", conversation_id
+    ).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation = conv_check.data[0]
+    
+    # Get existing messages for context
+    existing_msgs = supabase.table(AI_CHAT_MESSAGES_TABLE).select(
+        "role, content"
+    ).eq("conversation_id", conversation_id).order("created_at").limit(20).execute()
+    
+    messages_history = existing_msgs.data or []
+    
+    # Build the user message with study mode if provided
+    user_content = payload.content
+    if payload.study_mode:
+        user_content = _build_study_mode_prompt(payload.study_mode, payload.content)
+    
+    # Save user message
+    user_msg_data = {
+        "conversation_id": conversation_id,
+        "role": "user",
+        "content": payload.content,  # Store original content
+        "attachments": payload.attachments or [],
+        "metadata": {"study_mode": payload.study_mode} if payload.study_mode else {},
+    }
+    
+    try:
+        user_msg_result = supabase.table(AI_CHAT_MESSAGES_TABLE).insert(user_msg_data).execute()
+        user_message = user_msg_result.data[0] if user_msg_result.data else None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save message: {str(e)}")
+    
+    # Build conversation for AI
+    ai_messages = [{"role": m["role"], "content": m["content"]} for m in messages_history]
+    ai_messages.append({"role": "user", "content": user_content})
+    
+    # Generate AI response
+    try:
+        ai_response = await _generate_ai_response(ai_messages, payload.study_mode)
+    except HTTPException:
+        raise
+    except Exception as e:
+        ai_response = f"I apologize, but I encountered an error while processing your request. Please try again. Error: {str(e)}"
+    
+    # Save AI response
+    ai_msg_data = {
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": ai_response,
+        "attachments": [],
+        "metadata": {"model": "gemini-2.5-flash"},
+    }
+    
+    try:
+        ai_msg_result = supabase.table(AI_CHAT_MESSAGES_TABLE).insert(ai_msg_data).execute()
+        ai_message = ai_msg_result.data[0] if ai_msg_result.data else None
+    except Exception as e:
+        print(f"[StudyAI] Failed to save AI response: {e}")
+    
+    # Update conversation title if it's the first message and title is default
+    if len(messages_history) == 0 and conversation.get("title") == "New Chat":
+        # Auto-generate title from first message
+        new_title = payload.content[:50] + ("..." if len(payload.content) > 50 else "")
+        try:
+            supabase.table(AI_CHAT_CONVERSATIONS_TABLE).update({
+                "title": new_title,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+        except Exception:
+            pass
+    else:
+        # Just update timestamp
+        try:
+            supabase.table(AI_CHAT_CONVERSATIONS_TABLE).update({
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+        except Exception:
+            pass
+    
+    return {
+        "user_message": user_message,
+        "ai_message": ai_message,
+    }
+
+
+@studyai_router.post("/conversations/{conversation_id}/share")
+async def generate_share_link(
+    conversation_id: str,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Generate a shareable link for a conversation."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify ownership and get current share_code
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select(
+        "id, share_code, is_public"
+    ).eq("id", conversation_id).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation = conv_check.data[0]
+    
+    # Generate new share code if none exists
+    share_code = conversation.get("share_code")
+    if not share_code:
+        share_code = _generate_share_code()
+        try:
+            supabase.table(AI_CHAT_CONVERSATIONS_TABLE).update({
+                "share_code": share_code,
+                "is_public": True,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", conversation_id).execute()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate share link: {str(e)}")
+    
+    return {"share_code": share_code, "is_public": True}
+
+
+@studyai_router.get("/shared/{share_code}")
+async def get_shared_conversation(share_code: str):
+    """Get a shared conversation (public access)."""
+    supabase = get_service_client()
+    
+    try:
+        # Get conversation by share code
+        conv_result = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select(
+            "id, title, is_anonymous, created_at, user_id"
+        ).eq("share_code", share_code).eq("is_public", True).limit(1).execute()
+        
+        if not conv_result.data:
+            raise HTTPException(status_code=404, detail="Shared conversation not found")
+        
+        conversation = conv_result.data[0]
+        
+        # Get user info if not anonymous
+        owner_name = None
+        if not conversation.get("is_anonymous"):
+            profile = supabase.table("user_profiles").select("name").eq(
+                "auth_user_id", conversation["user_id"]
+            ).limit(1).execute()
+            if profile.data:
+                owner_name = profile.data[0].get("name")
+        
+        # Remove user_id from response
+        del conversation["user_id"]
+        conversation["owner_name"] = owner_name if not conversation.get("is_anonymous") else "Anonymous"
+        
+        # Get messages
+        msg_result = supabase.table(AI_CHAT_MESSAGES_TABLE).select(
+            "id, role, content, attachments, created_at"
+        ).eq("conversation_id", conversation["id"]).order("created_at").execute()
+        
+        conversation["messages"] = msg_result.data or []
+        
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.patch("/messages/{message_id}/bookmark")
+async def toggle_message_bookmark(
+    message_id: str,
+    payload: ChatMessageBookmark,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Toggle bookmark status of a message."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify message belongs to user's conversation
+    msg_check = supabase.table(AI_CHAT_MESSAGES_TABLE).select(
+        "id, conversation_id"
+    ).eq("id", message_id).limit(1).execute()
+    
+    if not msg_check.data:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    conv_id = msg_check.data[0]["conversation_id"]
+    
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select("id").eq(
+        "id", conv_id
+    ).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    try:
+        result = supabase.table(AI_CHAT_MESSAGES_TABLE).update({
+            "is_bookmarked": payload.is_bookmarked
+        }).eq("id", message_id).execute()
+        return {"success": True, "is_bookmarked": payload.is_bookmarked}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@studyai_router.get("/conversations/{conversation_id}/export/md")
+async def export_conversation_markdown(
+    conversation_id: str,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Export conversation as Markdown."""
+    user_id = get_user_id_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    supabase = get_service_client()
+    
+    # Verify ownership
+    conv_check = supabase.table(AI_CHAT_CONVERSATIONS_TABLE).select(
+        "id, title, created_at"
+    ).eq("id", conversation_id).eq("user_id", user_id).limit(1).execute()
+    
+    if not conv_check.data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation = conv_check.data[0]
+    
+    # Get messages
+    msg_result = supabase.table(AI_CHAT_MESSAGES_TABLE).select(
+        "role, content, created_at"
+    ).eq("conversation_id", conversation_id).order("created_at").execute()
+    
+    messages = msg_result.data or []
+    
+    # Build markdown
+    md_lines = [
+        f"# {conversation['title']}",
+        f"*Exported from StudyAI on {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC*",
+        "",
+        "---",
+        ""
+    ]
+    
+    for msg in messages:
+        role = "**You:**" if msg["role"] == "user" else "**StudyAI:**"
+        md_lines.append(role)
+        md_lines.append("")
+        md_lines.append(msg["content"])
+        md_lines.append("")
+        md_lines.append("---")
+        md_lines.append("")
+    
+    markdown_content = "\n".join(md_lines)
+    
+    return Response(
+        content=markdown_content,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{conversation["title"][:40]}.md"'
+        }
+    )
+
+
+app.include_router(studyai_router)
 
 
 # ============================================================================
