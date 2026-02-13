@@ -16715,6 +16715,120 @@ async def api_generate_maths_notes_stream(
     return StreamingResponse(event_source(), media_type="text/event-stream", headers=headers)
 
 
+MATHS_SOLVE_SYSTEM_PROMPT = """You are a senior Engineering Mathematics educator.
+
+A student has clicked on a practice problem and needs the FULL DETAILED SOLUTION.
+
+RULES:
+- Solve the given problem step-by-step.
+- Show EVERY intermediate step clearly (do NOT skip algebraic manipulations).
+- Explain WHY each step is done in one short line.
+- Use LaTeX math notation ($...$ for inline, $$...$$ for display).
+- Start with: # Solution
+- Then restate the problem under ## Problem
+- Then solve under ## Step-by-Step Solution
+- End with ## Final Answer (boxed or highlighted)
+- If there are multiple parts, solve each separately.
+- Keep language simple, as if explaining to a first-time learner.
+- Use Markdown formatting (bold key terms, numbered steps).
+"""
+
+
+def _generate_maths_solution_markdown(question: str) -> str:
+    """Generate a detailed step-by-step solution for one practice problem using Gemini 3 Pro Preview."""
+    if not genai:
+        raise HTTPException(status_code=500, detail="AI service not available")
+
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    clean_q = (question or "").strip()
+    if not clean_q:
+        raise HTTPException(status_code=400, detail="Missing question")
+
+    client = genai.Client(api_key=gemini_key)
+    user_prompt = textwrap.dedent(
+        f"""
+        Solve the following Engineering Mathematics practice problem with a full, detailed, step-by-step solution.
+
+        Problem:
+        {clean_q}
+
+        Requirements:
+        - Return ONLY Markdown (no code fences, no extra commentary).
+        - First line must be: # Solution
+        - Use LaTeX math notation throughout.
+        - Show every intermediate step.
+        - Explain each step briefly.
+        """
+    ).strip()
+
+    response = client.models.generate_content(
+        model=MATHS_NOTES_MODEL,
+        contents=[
+            {
+                "role": "user",
+                "parts": [{"text": user_prompt}],
+            }
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=MATHS_SOLVE_SYSTEM_PROMPT,
+            temperature=0.3,
+            max_output_tokens=int(os.getenv("MATHS_NOTES_MAX_TOKENS", "8192") or "8192"),
+        ),
+    )
+
+    text = getattr(response, "text", "") or ""
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=502, detail="Empty response from Gemini")
+    return text
+
+
+@notes_router.post("/api/maths-notes/solve", summary="Solve a practice problem (Gemini 3 Pro Preview)")
+async def api_solve_maths_problem(payload: dict):
+    question = (payload or {}).get("question", "").strip()
+    if not question:
+        return JSONResponse({"error": "Missing 'question'"}, status_code=400)
+
+    # Use "Solution: <question>" as the title to store/retrieve from ai_notes
+    solution_title = f"Solution: {question}"
+    solution_variant = "solution"
+
+    try:
+        # DB-first: return cached solution if available
+        row = db_get_ai_note_by_title_exact_variant(solution_title, variant=solution_variant)
+        if row and (row.get("markdown") or "").strip():
+            return {
+                "id": row.get("id"),
+                "markdown": row.get("markdown", ""),
+                "question": question,
+                "cached": True,
+                "model": MATHS_NOTES_MODEL,
+            }
+
+        # Generate solution
+        md = await run_in_threadpool(_generate_maths_solution_markdown, question)
+
+        # Store in ai_notes table
+        row = None
+        try:
+            row = db_upsert_ai_note_by_title_variant(solution_title, md, variant=solution_variant, image_urls=[])
+        except Exception:
+            row = None
+
+        return {
+            "id": (row.get("id") if isinstance(row, dict) else None),
+            "markdown": (row.get("markdown") if isinstance(row, dict) and row.get("markdown") else md),
+            "question": question,
+            "cached": False,
+            "model": MATHS_NOTES_MODEL,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 class FlashcardSection(BaseModel):
     icon: str = Field(..., min_length=1, max_length=8)
     heading: str = Field(..., min_length=1)
@@ -19974,6 +20088,100 @@ def ping_streak(authorization: Optional[str] = Header(default=None)):
         pass  # Ignore duplicate key errors
     
     return {"status": "ok", "date": today.isoformat()}
+
+
+@academics_router.get("/api/leaderboard", summary="Public leaderboard: top users by streak")
+def get_leaderboard(
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """Return top users ranked by current_streak (no auth required)."""
+    supabase = get_service_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database unavailable")
+
+    # Fetch top streaks
+    try:
+        streak_res = (
+            supabase.table("notex_streak")
+            .select("user_profile_id,current_streak,longest_streak,last_activity_date")
+            .order("current_streak", desc=True)
+            .limit(50)  # Fetch more to allow for filtering
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Streak query failed: {e}")
+
+    streak_rows: List[dict] = getattr(streak_res, "data", []) or []
+    if not streak_rows:
+        return {"leaderboard": [], "count": 0}
+    profile_ids = [r.get("user_profile_id") for r in streak_rows if r.get("user_profile_id")]
+    profile_map: Dict[str, dict] = {}
+    
+    # Filter out admins and employees
+    excluded_profile_ids = set()
+    if profile_ids:
+        try:
+            # Get auth_user_ids for these profiles
+            prof_res = (
+                supabase.table("user_profiles")
+                .select("id,auth_user_id,name,profile_image_url")
+                .in_("id", profile_ids)
+                .execute()
+            )
+            profiles_data = getattr(prof_res, "data", []) or []
+            
+            # Map profile_id -> auth_user_id
+            pid_to_uid = {}
+            for p in profiles_data:
+                if isinstance(p, dict) and p.get("id"):
+                    profile_map[p["id"]] = p
+                    if p.get("auth_user_id"):
+                        pid_to_uid[p["id"]] = p["auth_user_id"]
+            
+            # Check admin_roles for these users
+            uids_to_check = list(pid_to_uid.values())
+            if uids_to_check:
+                role_res = (
+                    supabase.table("admin_roles")
+                    .select("auth_user_id,role")
+                    .in_("auth_user_id", uids_to_check)
+                    .execute()
+                )
+                for r in (getattr(role_res, "data", []) or []):
+                    role = r.get("role")
+                    if role in ("admin", "employee"):
+                        # Find profile_id for this auth_user_id
+                        for pid, uid in pid_to_uid.items():
+                            if uid == r.get("auth_user_id"):
+                                excluded_profile_ids.add(pid)
+                                break
+        except Exception:
+            pass  # Gracefully degrade
+
+    # Build response
+    leaderboard: List[dict] = []
+    current_rank = 1
+    
+    for row in streak_rows:
+        pid = row.get("user_profile_id")
+        if pid in excluded_profile_ids:
+            continue
+            
+        profile = profile_map.get(pid, {}) if pid else {}
+        leaderboard.append({
+            "rank": current_rank,
+            "name": profile.get("name") or "Anonymous",
+            "profile_image_url": profile.get("profile_image_url"),
+            "current_streak": int(row.get("current_streak") or 0),
+            "longest_streak": int(row.get("longest_streak") or 0),
+            "last_activity_date": row.get("last_activity_date"),
+        })
+        current_rank += 1
+        
+        if len(leaderboard) >= limit:
+            break
+
+    return {"leaderboard": leaderboard, "count": len(leaderboard)}
 
 
 # --- FastAPI app ---
